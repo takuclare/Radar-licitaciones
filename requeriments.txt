@@ -1,0 +1,11 @@
+streamlit
+pandas
+openpyxl
+requests
+beautifulsoup4
+lxml
+feedparser
+openai
+python-dotenv
+PyPDF2
+pypdf
