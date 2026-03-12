@@ -8,6 +8,6 @@ feedparser
 openai
 python-dotenv
 PyPDF2
-
 pypdf
 feedparser
+
