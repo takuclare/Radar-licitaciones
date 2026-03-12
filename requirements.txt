@@ -9,6 +9,7 @@ openai
 python-dotenv
 PyPDF2
 pypdf
+scikit-learn
 
 
 
