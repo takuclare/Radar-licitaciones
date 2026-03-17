@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone, date
 from zoneinfo import ZoneInfo
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Dict, Callable
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin, parse_qsl, urlencode
 
 import pandas as pd
 import feedparser
@@ -194,6 +194,38 @@ def _extract_importe_from_atom_summary(summary: str) -> str:
     currency = (m.group(2) or "EUR").replace("€", "EUR").strip()
     return f"{amount} {currency}".strip()
 
+def _fetch_feed_entries_paginated(feed_url: str, max_entries: int = 2000, max_pages: int = 10) -> List:
+    """Lee un feed ATOM siguiendo enlaces rel=next hasta un máximo razonable."""
+    collected = []
+    next_url = feed_url
+    seen_urls = set()
+    pages = 0
+
+    max_entries = max(1, int(max_entries or 1))
+    max_pages = max(1, int(max_pages or 1))
+
+    while next_url and next_url not in seen_urls and pages < max_pages and len(collected) < max_entries:
+        seen_urls.add(next_url)
+        parsed = feedparser.parse(next_url)
+        entries = list(parsed.entries or [])
+        if entries:
+            remaining = max_entries - len(collected)
+            collected.extend(entries[:remaining])
+
+        next_found = None
+        feed_links = getattr(parsed.feed, "links", []) if getattr(parsed, "feed", None) else []
+        for link in feed_links:
+            rel = (getattr(link, "rel", "") or "").lower()
+            href = getattr(link, "href", None) or (link.get("href") if isinstance(link, dict) else None)
+            if rel == "next" and href:
+                next_found = urljoin(next_url, href)
+                break
+
+        next_url = next_found
+        pages += 1
+
+    return collected
+
 
 # ---------------- CATALUNYA: filtro estado en Atom ----------------
 _FEED_1044 = "https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_1044/PlataformasAgregadasSinMenores.atom"
@@ -226,25 +258,31 @@ def _is_madrid_tender(link: str) -> bool:
         return False
     return _MADRID_HOST in host
 
-def _fetch_issue_date_map_from_atom(atom_url: str) -> Dict[str, date]:
-    """Devuelve {link_href: IssueDate} para entradas del ATOM que incluyan <cbc:IssueDate>."""
+def _normalize_madrid_link_key(link: str) -> str:
+    """Normaliza links de la Comunidad de Madrid para casar el href del ATOM con el link parseado."""
+    if not link:
+        return ""
     try:
-        r = _get_session().get(atom_url, timeout=25, allow_redirects=True)
-        r.raise_for_status()
-        xml = r.text or ""
+        u = urlparse(link.strip())
+        host = (u.netloc or "").lower()
+        path = (u.path or "").rstrip("/")
+        query_items = [(k, v) for k, v in parse_qsl(u.query or "", keep_blank_values=True)]
+        query_items.sort()
+        query = urlencode(query_items, doseq=True)
+        return f"{host}{path}?{query}" if query else f"{host}{path}"
     except Exception:
-        return {}
+        return (link or "").strip().lower()
 
+def _extract_issue_date_map_from_atom_xml(xml: str) -> Dict[str, date]:
+    """Extrae {link_href_normalizado: IssueDate} de una página XML ATOM ya descargada."""
     try:
-        root = ET.fromstring(xml)
+        root = ET.fromstring(xml or "")
     except Exception:
         return {}
 
     out: Dict[str, date] = {}
 
-    # ATOM suele ser <entry> ... <link href="..."/> ... <cbc:IssueDate>YYYY-MM-DD</cbc:IssueDate>
     for entry in root.findall(".//{*}entry"):
-        # link href
         href = ""
         for lk in entry.findall("{*}link"):
             h = (lk.get("href") or "").strip()
@@ -253,7 +291,6 @@ def _fetch_issue_date_map_from_atom(atom_url: str) -> Dict[str, date]:
                 break
 
         if not href:
-            # fallback: buscar cualquier atributo href dentro de la entry
             for el in entry.iter():
                 h = (el.get("href") or "").strip()
                 if h:
@@ -264,7 +301,6 @@ def _fetch_issue_date_map_from_atom(atom_url: str) -> Dict[str, date]:
             continue
 
         issue_txt = ""
-        # buscar cualquier tag que termine en IssueDate (ignora namespaces)
         for el in entry.iter():
             tag = el.tag or ""
             if isinstance(tag, str) and tag.endswith("IssueDate"):
@@ -280,7 +316,55 @@ def _fetch_issue_date_map_from_atom(atom_url: str) -> Dict[str, date]:
         except Exception:
             continue
 
-        out[href] = d
+        out[_normalize_madrid_link_key(href)] = d
+
+    return out
+
+
+def _fetch_issue_date_map_from_atom(atom_url: str, max_entries: int = 3000, max_pages: int = 10) -> Dict[str, date]:
+    """
+    Devuelve {link_href_normalizado: IssueDate} recorriendo TODAS las páginas del ATOM.
+    Esto evita que licitaciones de Madrid de páginas posteriores entren con una fecha reciente de update
+    cuando su IssueDate real es antiguo.
+    """
+    out: Dict[str, date] = {}
+    next_url = atom_url
+    seen_urls = set()
+    pages = 0
+    collected = 0
+
+    max_entries = max(1, int(max_entries or 1))
+    max_pages = max(1, int(max_pages or 1))
+
+    while next_url and next_url not in seen_urls and pages < max_pages and collected < max_entries:
+        seen_urls.add(next_url)
+        try:
+            r = _get_session().get(next_url, timeout=25, allow_redirects=True)
+            r.raise_for_status()
+            xml = r.text or ""
+        except Exception:
+            break
+
+        page_map = _extract_issue_date_map_from_atom_xml(xml)
+        if page_map:
+            out.update(page_map)
+            collected += len(page_map)
+
+        try:
+            root = ET.fromstring(xml)
+        except Exception:
+            break
+
+        next_found = None
+        for lk in root.findall('.//{*}link'):
+            rel = (lk.get('rel') or '').lower()
+            href = (lk.get('href') or '').strip()
+            if rel == 'next' and href:
+                next_found = urljoin(next_url, href)
+                break
+
+        next_url = next_found
+        pages += 1
 
     return out
 
@@ -609,53 +693,76 @@ def load_company_corpus(excel_path: str) -> List[str]:
 def fetch_tenders(
     only_last_days: int = 1,
     exclude_deadline_soon_days: int = 1,
-    limit_per_feed: int = 200,
+    limit_per_feed: int = 2000,
+    max_feed_pages: int = 10,
     max_workers: int = 12,
     only_priority_cpvs: bool = False,
-    progress_cb: Optional[Callable[[float, str], None]] = None,
+    progress_cb: Optional[Callable] = None,
 ) -> List[Tender]:
     """
-    Optimizado: mantiene la MISMA lógica de filtros/extracción,
-    pero paraleliza las peticiones al portal (extract_portal_info) para reducir tiempos.
+    Optimizado: mantiene la lógica de filtros/extracción y además expone progreso real y continuo.
     """
     tenders: List[Tender] = []
+
+    def emit(progress: float, message: str, **meta):
+        if not progress_cb:
+            return
+        payload = {"progress": max(0.0, min(1.0, float(progress))), "message": message}
+        payload.update(meta)
+        try:
+            progress_cb(payload)
+        except TypeError:
+            progress_cb(payload["progress"], payload["message"])
+        except Exception:
+            pass
 
     now = datetime.utcnow()
     min_date = now - timedelta(days=only_last_days)
 
-    # 1) Parse feeds y prefiltrar por fecha del feed (evita llamadas al portal innecesarias)
+    # 1) Parse feeds y prefiltrar por fecha del feed
     candidates: List[Tuple[str, str, str, str, str, Optional[datetime], Optional[datetime], Optional[datetime], str]] = []
-    # tuple = (title, summary, link, published_raw, updated_raw, feed_pub_dt, feed_upd_dt, deadline_dt, feed_url)
+    total_feed_entries = 0
+    emit(0.02, "Iniciando lectura de feeds ATOM…", stage="Leyendo feeds ATOM", reviewed=0, total=0, detected=0, feed_entries=0, cache_hits=0)
 
-    for feed_url in FEEDS:
-        # ✅ Comunidad de Madrid (contratos-publicos.comunidad.madrid): usamos <cbc:IssueDate> del ATOM 1044
+    for feed_idx, feed_url in enumerate(FEEDS, start=1):
         issue_date_map: Dict[str, date] = {}
+        emit(0.03 + 0.07 * ((feed_idx - 1) / max(1, len(FEEDS))),
+             f"Leyendo feed {feed_idx}/{len(FEEDS)}…",
+             stage="Leyendo feeds ATOM", reviewed=0, total=0, detected=0, feed_entries=total_feed_entries, cache_hits=0)
         if feed_url == _FEED_1044:
-            issue_date_map = _fetch_issue_date_map_from_atom(feed_url)
-        parsed = feedparser.parse(feed_url)
-        entries = parsed.entries or []
+            issue_date_map = _fetch_issue_date_map_from_atom(feed_url, max_entries=limit_per_feed, max_pages=max_feed_pages)
 
-        if limit_per_feed is not None and limit_per_feed > 0:
-            entries = entries[:limit_per_feed]
+        entries = _fetch_feed_entries_paginated(
+            feed_url,
+            max_entries=limit_per_feed,
+            max_pages=max_feed_pages,
+        )
 
-        for e in entries:
+        feed_total = max(1, len(entries))
+        for entry_idx, e in enumerate(entries, start=1):
+            total_feed_entries += 1
+            if entry_idx == 1 or entry_idx == feed_total or entry_idx % 25 == 0:
+                feed_progress = (entry_idx / feed_total)
+                emit(0.04 + 0.08 * ((feed_idx - 1 + feed_progress) / max(1, len(FEEDS))),
+                     f"Analizando entradas ATOM del feed {feed_idx}/{len(FEEDS)}… {entry_idx}/{feed_total}",
+                     stage="Leyendo feeds ATOM", reviewed=0, total=0, detected=len(candidates), feed_entries=total_feed_entries, cache_hits=0)
+
             title = _clean_text(getattr(e, "title", "") or "")
             summary = _clean_text(getattr(e, "summary", "") or "")
             link = getattr(e, "link", "") or ""
             if not link:
                 continue
 
-            # ✅ Cataluña (host contractaciopublica.cat): mostrar únicamente si el Atom indica 'Estado: EN PLAZO'
-            if _is_catalunya_tender(link):
-                if not _atom_status_is_en_plazo(summary):
-                    continue
+            if _is_catalunya_tender(link) and not _atom_status_is_en_plazo(summary):
+                continue
 
-            # ✅ Comunidad de Madrid (contratos-publicos.comunidad.madrid) dentro del ATOM 1044:
-            #    - Fecha de publicación = <cbc:IssueDate>YYYY-MM-DD</cbc:IssueDate>
-            #    - Filtramos para NO mostrar entradas con IssueDate a ±2/3 días de hoy (solo hoy/ayer/mañana como máximo)
             is_madrid = (feed_url == _FEED_1044) and _is_madrid_tender(link)
-            issue_d = issue_date_map.get(link) if is_madrid else None
-            if is_madrid and issue_d:
+            issue_d = issue_date_map.get(_normalize_madrid_link_key(link)) if is_madrid else None
+            if is_madrid:
+                # Para Madrid, el filtrado SIEMPRE debe basarse en cbc:IssueDate del ATOM.
+                # Si no podemos resolverlo, preferimos excluir la entrada antes que colarla con una fecha errónea.
+                if not issue_d:
+                    continue
                 today = _today_madrid()
                 if abs((issue_d - today).days) > 1:
                     continue
@@ -664,7 +771,6 @@ def fetch_tenders(
             updated_raw = getattr(e, "updated", "") or published_raw
 
             if is_madrid and issue_d:
-                # Guardamos IssueDate como datetime naive (00:00) para filtros y display
                 feed_published_dt = datetime(issue_d.year, issue_d.month, issue_d.day)
                 published_raw = feed_published_dt.isoformat()
             else:
@@ -672,56 +778,52 @@ def fetch_tenders(
 
             feed_updated_dt = _to_naive_utc(_parse_atom_date(updated_raw))
 
-            # ✅ Prefiltro rápido: si el feed ya dice que es antiguo -> no ir al portal
             if feed_published_dt and feed_published_dt < min_date:
                 continue
 
             deadline_dt = _to_naive_utc(_extract_deadline_from_text(summary))
             atom_importe = _extract_importe_from_atom_summary(summary)
 
-            candidates.append(
-                (title, summary, link, published_raw, updated_raw, feed_published_dt, feed_updated_dt, deadline_dt, feed_url, atom_importe)
-            )
+            candidates.append((title, summary, link, published_raw, updated_raw, feed_published_dt, feed_updated_dt, deadline_dt, feed_url, atom_importe))
 
     if not candidates:
+        emit(1.0, "No se han encontrado candidatas en los feeds", stage="Completado", reviewed=0, total=0, detected=0, feed_entries=total_feed_entries, cache_hits=0)
         return []
 
-    # 2) Portal info en paralelo (1 request + cache por link)
-    #    extract_portal_info ya usa caché; si está cacheado, retorna rápido.
+    # 2) Portal info en paralelo
     portal_map: Dict[str, Tuple[Optional[datetime], Optional[datetime], Optional[str]]] = {}
-
-    # workers: acotamos a un número razonable para no saturar el portal
     workers = max(2, min(int(max_workers or 12), 20))
-
-    if progress_cb:
-        try:
-            progress_cb(0.15, "Leyendo expedientes…")
-        except Exception:
-            pass
+    total_candidates = max(1, len(candidates))
+    cache_hits = 0
+    emit(0.15, f"Revisando expedientes… 0/{total_candidates}", stage="Revisando expedientes", reviewed=0, total=total_candidates, detected=0, feed_entries=total_feed_entries, cache_hits=0)
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(extract_portal_info, c[2]): c[2] for c in candidates}
+        future_to_meta = {}
+        for c in candidates:
+            link = c[2]
+            cached = _CACHE.get(link)
+            if isinstance(cached, dict) and int(cached.get("v", 1) or 1) >= CACHE_VERSION:
+                cache_hits += 1
+            future_to_meta[ex.submit(extract_portal_info, link)] = link
+
         done = 0
-        total = max(1, len(futures))
-        for fut in as_completed(futures):
-            link = futures[fut]
+        for fut in as_completed(future_to_meta):
+            link = future_to_meta[fut]
             try:
                 portal_map[link] = fut.result()
             except Exception:
                 portal_map[link] = (None, None, None)
-
             done += 1
-            if progress_cb:
-                try:
-                    progress_cb(0.15 + 0.50 * (done / total), f"Leyendo expedientes… {done}/{total}")
-                except Exception:
-                    pass
+            emit(0.15 + 0.55 * (done / total_candidates),
+                 f"Revisando expedientes… {done}/{total_candidates}",
+                 stage="Revisando expedientes", reviewed=done, total=total_candidates, detected=0, feed_entries=total_feed_entries, cache_hits=cache_hits)
 
-    # 3) Aplicar EXACTAMENTE los mismos filtros finales que antes
+    # 3) Filtros finales con progreso real
+    reviewed_final = 0
+    detected_valid = 0
     for title, summary, link, published_raw, updated_raw, feed_published_dt, feed_updated_dt, deadline_dt, feed_url, atom_importe in candidates:
         portal_pub, portal_dead, portal_status = portal_map.get(link, (None, None, None))
 
-        # ✅ Comunidad de Madrid (contratos-publicos.comunidad.madrid): preferimos SIEMPRE IssueDate del ATOM (no el portal)
         if (feed_url == _FEED_1044) and _is_madrid_tender(link):
             published_dt = feed_published_dt
         else:
@@ -731,57 +833,51 @@ def fetch_tenders(
         if portal_dead:
             deadline_dt = _to_naive_utc(portal_dead)
 
+        include = True
         is_csp = _is_csp_host(link)
         if is_csp:
             verdict = _csp_status_is_publicada(portal_status)
-
             if verdict is False:
-                continue
+                include = False
+            elif verdict is None and _csp_failsafe_exclude_by_text(title, summary):
+                include = False
 
-            if verdict is None:
-                # Si no pudimos leer estado, excluimos los obvios "no publicada"
-                if _csp_failsafe_exclude_by_text(title, summary):
-                    continue
-                # si no hay señales, lo dejamos pasar para no quedarnos en 0
-
-        # Filtro recencia final
-        if published_dt and published_dt < min_date:
-            continue
-
-        # deadline vencida
-        if deadline_dt and deadline_dt < now:
-            continue
-
-        # plazo demasiado inminente
-        if deadline_dt and exclude_deadline_soon_days is not None:
+        if include and published_dt and published_dt < min_date:
+            include = False
+        if include and deadline_dt and deadline_dt < now:
+            include = False
+        if include and deadline_dt and exclude_deadline_soon_days is not None:
             if deadline_dt < (now + timedelta(days=exclude_deadline_soon_days)):
-                continue
+                include = False
 
-        tenders.append(
-            Tender(
-                title=title,
-                summary=summary,
-                published=published_dt.isoformat() if published_dt else (published_raw or ""),
-                updated=updated_dt.isoformat() if updated_dt else (updated_raw or ""),
-                deadline=deadline_dt.isoformat() if deadline_dt else "",
-                link=link,
-                source_feed=feed_url,
-                atom_importe=atom_importe,
+        if include:
+            detected_valid += 1
+            tenders.append(
+                Tender(
+                    title=title,
+                    summary=summary,
+                    published=published_dt.isoformat() if published_dt else (published_raw or ""),
+                    updated=updated_dt.isoformat() if updated_dt else (updated_raw or ""),
+                    deadline=deadline_dt.isoformat() if deadline_dt else "",
+                    link=link,
+                    source_feed=feed_url,
+                    atom_importe=atom_importe,
+                )
             )
-        )
 
-    # Deduplicación por link
+        reviewed_final += 1
+        if reviewed_final == 1 or reviewed_final == total_candidates or reviewed_final % 10 == 0:
+            emit(0.72 + 0.20 * (reviewed_final / total_candidates),
+                 f"Aplicando filtros finales… {reviewed_final}/{total_candidates}",
+                 stage="Aplicando filtros finales", reviewed=reviewed_final, total=total_candidates, detected=detected_valid, feed_entries=total_feed_entries, cache_hits=cache_hits)
+
     uniq: Dict[str, Tender] = {}
     for t in tenders:
         if t.link not in uniq:
             uniq[t.link] = t
-    if progress_cb:
-        try:
-            progress_cb(0.70, "Filtrando y preparando ranking…")
-        except Exception:
-            pass
-    return list(uniq.values())
 
+    emit(0.94, f"Preparando ranking de {len(uniq)} licitaciones válidas…", stage="Preparando ranking", reviewed=len(candidates), total=len(candidates), detected=len(uniq), feed_entries=total_feed_entries, cache_hits=cache_hits)
+    return list(uniq.values())
 
 
 # ---------------- SCORING ----------------
