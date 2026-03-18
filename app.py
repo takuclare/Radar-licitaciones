@@ -38,8 +38,8 @@ def live_fetch_tenders(limit_feed: int, max_feed_pages: int, only_cpv_airia: boo
     return fetch_tenders(
         limit_per_feed=limit_feed,
         max_feed_pages=max_feed_pages,
-        only_last_days=1,
-        exclude_deadline_soon_days=1,
+        only_last_days=2,
+        exclude_deadline_soon_days=2,
         only_priority_cpvs=only_cpv_airia,
         progress_cb=progress_cb,
     )

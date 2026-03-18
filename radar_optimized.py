@@ -246,6 +246,79 @@ def _atom_status_is_en_plazo(summary: str) -> bool:
     return re.search(r"\bestado\s*:?\s*en\s*plazo\b", t) is not None
 
 
+# ---------------- JUNTA DE ANDALUCÍA (www.juntadeandalucia.es) ----------------
+_ANDALUCIA_HOST = "www.juntadeandalucia.es"
+
+def _is_andalucia_tender(link: str) -> bool:
+    if not link:
+        return False
+    try:
+        host = urlparse(link).netloc.lower()
+    except Exception:
+        return False
+    return _ANDALUCIA_HOST in host
+
+def _normalize_andalucia_link_key(link: str) -> str:
+    if not link:
+        return ""
+    try:
+        u = urlparse(link.strip())
+        host = (u.netloc or "").lower()
+        path = (u.path or "").rstrip("/")
+        query_items = [(k, v) for k, v in parse_qsl(u.query or "", keep_blank_values=True)]
+        query_items.sort()
+        query = urlencode(query_items, doseq=True)
+        return f"{host}{path}?{query}" if query else f"{host}{path}"
+    except Exception:
+        return (link or "").strip().lower()
+
+def _extract_andalucia_end_date_map_from_atom_xml(xml: str) -> Dict[str, date]:
+    """Extrae {link_href_normalizado: EndDate} de una página XML ATOM ya descargada."""
+    try:
+        root = ET.fromstring(xml or "")
+    except Exception:
+        return {}
+
+    out: Dict[str, date] = {}
+
+    for entry in root.findall(".//{*}entry"):
+        href = ""
+        for lk in entry.findall("{*}link"):
+            h = (lk.get("href") or "").strip()
+            if h:
+                href = h
+                break
+
+        if not href:
+            for el in entry.iter():
+                h = (el.get("href") or "").strip()
+                if h:
+                    href = h
+                    break
+
+        if not href or not _is_andalucia_tender(href):
+            continue
+
+        end_txt = ""
+        for el in entry.iter():
+            tag = el.tag or ""
+            if isinstance(tag, str) and tag.endswith("EndDate"):
+                end_txt = (el.text or "").strip()
+                if end_txt:
+                    break
+
+        if not end_txt:
+            continue
+
+        try:
+            d = date.fromisoformat(end_txt[:10])
+        except Exception:
+            continue
+
+        out[_normalize_andalucia_link_key(href)] = d
+
+    return out
+
 # ---------------- COMUNIDAD DE MADRID (contratos-publicos.comunidad.madrid) ----------------
 _MADRID_HOST = "contratos-publicos.comunidad.madrid"
 
@@ -691,8 +764,8 @@ def load_company_corpus(excel_path: str) -> List[str]:
 
 # ---------------- FETCH + FILTROS ----------------
 def fetch_tenders(
-    only_last_days: int = 1,
-    exclude_deadline_soon_days: int = 1,
+    only_last_days: int = 2,
+    exclude_deadline_soon_days: int = 2,
     limit_per_feed: int = 2000,
     max_feed_pages: int = 10,
     max_workers: int = 12,
@@ -726,11 +799,40 @@ def fetch_tenders(
 
     for feed_idx, feed_url in enumerate(FEEDS, start=1):
         issue_date_map: Dict[str, date] = {}
+        andalucia_end_date_map: Dict[str, date] = {}
         emit(0.03 + 0.07 * ((feed_idx - 1) / max(1, len(FEEDS))),
              f"Leyendo feed {feed_idx}/{len(FEEDS)}…",
              stage="Leyendo feeds ATOM", reviewed=0, total=0, detected=0, feed_entries=total_feed_entries, cache_hits=0)
         if feed_url == _FEED_1044:
             issue_date_map = _fetch_issue_date_map_from_atom(feed_url, max_entries=limit_per_feed, max_pages=max_feed_pages)
+            andalucia_end_date_map = _extract_andalucia_end_date_map_from_atom_xml(
+                _get_session().get(feed_url, timeout=25, allow_redirects=True).text
+            )
+            next_url = feed_url
+            seen_urls = set()
+            pages = 0
+            while next_url and next_url not in seen_urls and pages < max(1, int(max_feed_pages or 1)):
+                seen_urls.add(next_url)
+                try:
+                    r = _get_session().get(next_url, timeout=25, allow_redirects=True)
+                    r.raise_for_status()
+                    xml = r.text or ""
+                except Exception:
+                    break
+                andalucia_end_date_map.update(_extract_andalucia_end_date_map_from_atom_xml(xml))
+                try:
+                    root = ET.fromstring(xml)
+                except Exception:
+                    break
+                next_found = None
+                for lk in root.findall('.//{*}link'):
+                    rel = (lk.get('rel') or '').lower()
+                    href = (lk.get('href') or '').strip()
+                    if rel == 'next' and href:
+                        next_found = urljoin(next_url, href)
+                        break
+                next_url = next_found
+                pages += 1
 
         entries = _fetch_feed_entries_paginated(
             feed_url,
@@ -767,6 +869,13 @@ def fetch_tenders(
                 if abs((issue_d - today).days) > 1:
                     continue
 
+            is_andalucia = (feed_url == _FEED_1044) and _is_andalucia_tender(link)
+            andalucia_end_d = andalucia_end_date_map.get(_normalize_andalucia_link_key(link)) if is_andalucia else None
+            if is_andalucia and andalucia_end_d:
+                andalucia_end_dt = datetime(andalucia_end_d.year, andalucia_end_d.month, andalucia_end_d.day)
+                if andalucia_end_dt < (now + timedelta(days=exclude_deadline_soon_days)):
+                    continue
+
             published_raw = getattr(e, "published", "") or getattr(e, "updated", "") or ""
             updated_raw = getattr(e, "updated", "") or published_raw
 
@@ -782,6 +891,8 @@ def fetch_tenders(
                 continue
 
             deadline_dt = _to_naive_utc(_extract_deadline_from_text(summary))
+            if is_andalucia and andalucia_end_d:
+                deadline_dt = datetime(andalucia_end_d.year, andalucia_end_d.month, andalucia_end_d.day)
             atom_importe = _extract_importe_from_atom_summary(summary)
 
             candidates.append((title, summary, link, published_raw, updated_raw, feed_published_dt, feed_updated_dt, deadline_dt, feed_url, atom_importe))
