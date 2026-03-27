@@ -771,6 +771,8 @@ def fetch_tenders(
     max_workers: int = 12,
     only_priority_cpvs: bool = False,
     progress_cb: Optional[Callable] = None,
+    pre_rank_corpus: Optional[List[str]] = None,
+    deep_review_top_n: int = 30,
 ) -> List[Tender]:
     """
     Optimizado: mantiene la lógica de filtros/extracción y además expone progreso real y continuo.
@@ -901,38 +903,71 @@ def fetch_tenders(
         emit(1.0, "No se han encontrado candidatas en los feeds", stage="Completado", reviewed=0, total=0, detected=0, feed_entries=total_feed_entries, cache_hits=0)
         return []
 
-    # 2) Portal info en paralelo
-    portal_map: Dict[str, Tuple[Optional[datetime], Optional[datetime], Optional[str]]] = {}
-    workers = max(2, min(int(max_workers or 12), 20))
+    # 2) Pre-ranking ATOM + revisión profunda selectiva
     total_candidates = max(1, len(candidates))
     cache_hits = 0
-    emit(0.15, f"Revisando expedientes… 0/{total_candidates}", stage="Revisando expedientes", reviewed=0, total=total_candidates, detected=0, feed_entries=total_feed_entries, cache_hits=0)
 
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        future_to_meta = {}
-        for c in candidates:
-            link = c[2]
-            cached = _CACHE.get(link)
-            if isinstance(cached, dict) and int(cached.get("v", 1) or 1) >= CACHE_VERSION:
-                cache_hits += 1
-            future_to_meta[ex.submit(extract_portal_info, link)] = link
+    preliminary_tenders: List[Tender] = []
+    for title, summary, link, published_raw, updated_raw, feed_published_dt, feed_updated_dt, deadline_dt, feed_url, atom_importe in candidates:
+        preliminary_tenders.append(
+            Tender(
+                title=title,
+                summary=summary,
+                published=feed_published_dt.isoformat() if feed_published_dt else (published_raw or ""),
+                updated=feed_updated_dt.isoformat() if feed_updated_dt else (updated_raw or ""),
+                deadline=deadline_dt.isoformat() if deadline_dt else "",
+                link=link,
+                source_feed=feed_url,
+                atom_importe=atom_importe,
+            )
+        )
 
-        done = 0
-        for fut in as_completed(future_to_meta):
-            link = future_to_meta[fut]
-            try:
-                portal_map[link] = fut.result()
-            except Exception:
-                portal_map[link] = (None, None, None)
-            done += 1
-            emit(0.15 + 0.55 * (done / total_candidates),
-                 f"Revisando expedientes… {done}/{total_candidates}",
-                 stage="Revisando expedientes", reviewed=done, total=total_candidates, detected=0, feed_entries=total_feed_entries, cache_hits=cache_hits)
+    deep_review_top_n = max(0, int(deep_review_top_n or 0))
+    top_review_links = set()
+    if deep_review_top_n > 0 and preliminary_tenders:
+        emit(0.15, "Calculando pre-ranking sobre ATOM…", stage="Pre-ranking ATOM", reviewed=0, total=total_candidates, detected=len(preliminary_tenders), feed_entries=total_feed_entries, cache_hits=0)
+        try:
+            prelim_df = score_tenders(preliminary_tenders, pre_rank_corpus or [""], top_k=None)
+            top_review_links = set(prelim_df.head(deep_review_top_n)["link"].astype(str).tolist())
+        except Exception:
+            top_review_links = set(t.link for t in preliminary_tenders[:deep_review_top_n])
+
+    cached_review_links = set()
+    for c in candidates:
+        link = c[2]
+        cached = _CACHE.get(link)
+        if isinstance(cached, dict) and int(cached.get("v", 1) or 1) >= CACHE_VERSION:
+            cache_hits += 1
+            cached_review_links.add(link)
+
+    review_links = list(cached_review_links | top_review_links)
+    review_total = len(review_links)
+    portal_map: Dict[str, Tuple[Optional[datetime], Optional[datetime], Optional[str]]] = {}
+    workers = max(2, min(int(max_workers or 12), 20))
+
+    if review_total > 0:
+        emit(0.20, f"Revisión profunda selectiva… 0/{review_total}", stage="Revisión profunda selectiva", reviewed=0, total=review_total, detected=0, feed_entries=total_feed_entries, cache_hits=cache_hits)
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            future_to_meta = {ex.submit(extract_portal_info, link): link for link in review_links}
+            done = 0
+            for fut in as_completed(future_to_meta):
+                link = future_to_meta[fut]
+                try:
+                    portal_map[link] = fut.result()
+                except Exception:
+                    portal_map[link] = (None, None, None)
+                done += 1
+                emit(0.20 + 0.45 * (done / max(1, review_total)),
+                     f"Revisión profunda selectiva… {done}/{review_total}",
+                     stage="Revisión profunda selectiva", reviewed=done, total=review_total, detected=0, feed_entries=total_feed_entries, cache_hits=cache_hits)
+    else:
+        emit(0.65, "Sin revisión profunda adicional: usando solo datos ATOM", stage="Revisión profunda selectiva", reviewed=0, total=0, detected=0, feed_entries=total_feed_entries, cache_hits=cache_hits)
 
     # 3) Filtros finales con progreso real
     reviewed_final = 0
     detected_valid = 0
     for title, summary, link, published_raw, updated_raw, feed_published_dt, feed_updated_dt, deadline_dt, feed_url, atom_importe in candidates:
+        reviewed_deep = link in portal_map
         portal_pub, portal_dead, portal_status = portal_map.get(link, (None, None, None))
 
         if (feed_url == _FEED_1044) and _is_madrid_tender(link):
@@ -947,7 +982,7 @@ def fetch_tenders(
         include = True
         is_csp = _is_csp_host(link)
         if is_csp:
-            verdict = _csp_status_is_publicada(portal_status)
+            verdict = _csp_status_is_publicada(portal_status) if reviewed_deep else None
             if verdict is False:
                 include = False
             elif verdict is None and _csp_failsafe_exclude_by_text(title, summary):
@@ -978,7 +1013,7 @@ def fetch_tenders(
 
         reviewed_final += 1
         if reviewed_final == 1 or reviewed_final == total_candidates or reviewed_final % 10 == 0:
-            emit(0.72 + 0.20 * (reviewed_final / total_candidates),
+            emit(0.68 + 0.24 * (reviewed_final / total_candidates),
                  f"Aplicando filtros finales… {reviewed_final}/{total_candidates}",
                  stage="Aplicando filtros finales", reviewed=reviewed_final, total=total_candidates, detected=detected_valid, feed_entries=total_feed_entries, cache_hits=cache_hits)
 

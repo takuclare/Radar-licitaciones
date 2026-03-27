@@ -3,6 +3,11 @@ import re
 import hashlib
 import base64
 import io
+import json
+from datetime import datetime, timezone
+
+import pandas as pd
+import requests
 import streamlit as st
 from PIL import Image, ImageSequence
 
@@ -34,7 +39,7 @@ FONDO_PATH = os.path.join(ASSETS_DIR, "fondo.png")
 def cached_company_corpus(excel_path: str):
     return load_company_corpus(excel_path)
 
-def live_fetch_tenders(limit_feed: int, max_feed_pages: int, only_cpv_airia: bool, progress_cb=None):
+def live_fetch_tenders(limit_feed: int, max_feed_pages: int, only_cpv_airia: bool, company_corpus=None, progress_cb=None):
     return fetch_tenders(
         limit_per_feed=limit_feed,
         max_feed_pages=max_feed_pages,
@@ -42,7 +47,47 @@ def live_fetch_tenders(limit_feed: int, max_feed_pages: int, only_cpv_airia: boo
         exclude_deadline_soon_days=2,
         only_priority_cpvs=only_cpv_airia,
         progress_cb=progress_cb,
+        pre_rank_corpus=company_corpus,
+        deep_review_top_n=30,
     )
+
+# ==============================
+# Snapshot remoto (GitHub branch snapshot-data)
+# ==============================
+
+REMOTE_SNAPSHOT_URL_ALL = os.getenv("REMOTE_SNAPSHOT_URL_ALL", "").strip()
+REMOTE_SNAPSHOT_URL_CPV = os.getenv("REMOTE_SNAPSHOT_URL_CPV", "").strip()
+REMOTE_SNAPSHOT_MAX_AGE_MIN = int(os.getenv("REMOTE_SNAPSHOT_MAX_AGE_MIN", "20") or 20)
+
+@st.cache_data(show_spinner=False, ttl=120)
+def _load_remote_snapshot(url: str):
+    if not url:
+        return None
+    r = requests.get(url, timeout=25)
+    r.raise_for_status()
+    return r.json()
+
+def _snapshot_generated_minutes_ago(snapshot: dict):
+    ts = (snapshot or {}).get("generated_at_utc")
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds() / 60.0
+    except Exception:
+        return None
+
+def _snapshot_is_fresh(snapshot: dict, max_age_minutes: int = 20) -> bool:
+    age = _snapshot_generated_minutes_ago(snapshot)
+    return age is not None and age <= max_age_minutes
+
+def _snapshot_to_df(snapshot: dict) -> pd.DataFrame:
+    rows = (snapshot or {}).get("rows") or []
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
 
 # ==============================
 # UI helpers
@@ -347,6 +392,13 @@ with st.sidebar:
     # La búsqueda principal siempre muestra progreso real; la caché rápida de Streamlit se evita aquí.
     bypass_cache = st.checkbox("Revalidar portales (ignorar caché interna de expedientes)", value=False)
     only_cpv_airia = st.checkbox("Solo CPVs Airia", value=False)
+    external_snapshot_available = bool(REMOTE_SNAPSHOT_URL_ALL)
+    use_external_snapshot = st.checkbox(
+        "Usar precarga externa (GitHub)",
+        value=external_snapshot_available,
+        disabled=not external_snapshot_available,
+        help="Lee una instantánea actualizada por GitHub Actions. Si no está disponible o está vieja, la app vuelve a la búsqueda normal.",
+    )
 
     run = st.button("🔄 Buscar licitaciones", use_container_width=True)
     search_progress_ph = st.empty()
@@ -439,44 +491,80 @@ if run:
         progress_title_ph.markdown("<div class='section-title' style='margin-top:8px;'>Progreso de búsqueda</div>", unsafe_allow_html=True)
         _render_meta()
 
-        with st.spinner("Buscando licitaciones…"):
-            def _cb(payload):
-                if isinstance(payload, tuple) and len(payload) == 2:
-                    frac, msg = payload
-                    meta = {}
-                elif isinstance(payload, dict):
-                    frac = float(payload.get('progress', 0.0) or 0.0)
-                    msg = str(payload.get('message', '') or '')
-                    meta = payload
-                else:
-                    frac = 0.0
-                    msg = str(payload or '')
-                    meta = {}
+        used_remote_snapshot = False
+        remote_error = None
 
-                p.progress(max(0.0, min(1.0, frac)), text=msg or "Procesando…")
-                _render_meta(
-                    stage=meta.get('stage', msg),
-                    reviewed=int(meta.get('reviewed', 0) or 0),
-                    total=int(meta.get('total', 0) or 0),
-                    detected=int(meta.get('detected', 0) or 0),
-                    feed_count=int(meta.get('feed_entries', 0) or 0),
-                    cache_hits=int(meta.get('cache_hits', 0) or 0),
-                )
+        if use_external_snapshot and not bypass_cache:
+            selected_snapshot_url = REMOTE_SNAPSHOT_URL_CPV if only_cpv_airia and REMOTE_SNAPSHOT_URL_CPV else REMOTE_SNAPSHOT_URL_ALL
+            if selected_snapshot_url:
+                try:
+                    p.progress(0.20, text="Consultando precarga externa…")
+                    snapshot = _load_remote_snapshot(selected_snapshot_url)
+                    if snapshot and _snapshot_is_fresh(snapshot, REMOTE_SNAPSHOT_MAX_AGE_MIN):
+                        df_remote = _snapshot_to_df(snapshot)
+                        if not df_remote.empty:
+                            total_detected = int(snapshot.get("detected_count", len(df_remote)) or len(df_remote))
+                            generated_age = _snapshot_generated_minutes_ago(snapshot)
+                            shown_df = df_remote.head(top_k).copy()
+                            st.session_state.tenders_count = total_detected
+                            st.session_state.df = shown_df
+                            used_remote_snapshot = True
+                            p.progress(1.0, text="Resultados cargados desde precarga externa ✅")
+                            _render_meta(
+                                stage="Precarga externa",
+                                reviewed=total_detected,
+                                total=total_detected,
+                                detected=total_detected,
+                                feed_count=int(snapshot.get("feed_entries", 0) or 0),
+                                cache_hits=total_detected,
+                            )
+                            age_txt = f"hace {generated_age:.1f} min" if generated_age is not None else "reciente"
+                            st.session_state.msg_ok = f"Ranking cargado desde precarga externa ✅ (mostrando {len(shown_df)} de {total_detected}, generado {age_txt})"
+                            st.success(st.session_state.msg_ok)
+                except Exception as e:
+                    remote_error = str(e)
 
-            tenders = live_fetch_tenders(limit_feed, max_feed_pages, only_cpv_airia, progress_cb=_cb)
+        if not used_remote_snapshot:
+            with st.spinner("Buscando licitaciones…"):
+                def _cb(payload):
+                    if isinstance(payload, tuple) and len(payload) == 2:
+                        frac, msg = payload
+                        meta = {}
+                    elif isinstance(payload, dict):
+                        frac = float(payload.get('progress', 0.0) or 0.0)
+                        msg = str(payload.get('message', '') or '')
+                        meta = payload
+                    else:
+                        frac = 0.0
+                        msg = str(payload or '')
+                        meta = {}
 
-        st.session_state.tenders_count = len(tenders)
+                    p.progress(max(0.0, min(1.0, frac)), text=msg or "Procesando…")
+                    _render_meta(
+                        stage=meta.get('stage', msg),
+                        reviewed=int(meta.get('reviewed', 0) or 0),
+                        total=int(meta.get('total', 0) or 0),
+                        detected=int(meta.get('detected', 0) or 0),
+                        feed_count=int(meta.get('feed_entries', 0) or 0),
+                        cache_hits=int(meta.get('cache_hits', 0) or 0),
+                    )
 
-        p.progress(0.96, text="Calculando ranking final…")
-        _render_meta(stage="Calculando ranking final", reviewed=len(tenders), total=max(len(tenders), 1), detected=len(tenders), feed_count=0, cache_hits=0)
+                tenders = live_fetch_tenders(limit_feed, max_feed_pages, only_cpv_airia, company_corpus=company_corpus, progress_cb=_cb)
 
-        with st.spinner("Calculando ranking…"):
-            df = score_tenders(tenders, company_corpus, top_k=top_k)
+            st.session_state.tenders_count = len(tenders)
 
-        st.session_state.df = df
-        p.progress(1.0, text="Ranking generado ✅")
-        st.session_state.msg_ok = f"Ranking generado ✅ (mostrando {len(df)} de {st.session_state.tenders_count})"
-        st.success(st.session_state.msg_ok)
+            p.progress(0.96, text="Calculando ranking final…")
+            _render_meta(stage="Calculando ranking final", reviewed=len(tenders), total=max(len(tenders), 1), detected=len(tenders), feed_count=0, cache_hits=0)
+
+            with st.spinner("Calculando ranking…"):
+                df = score_tenders(tenders, company_corpus, top_k=top_k)
+
+            st.session_state.df = df
+            p.progress(1.0, text="Ranking generado ✅")
+            st.session_state.msg_ok = f"Ranking generado ✅ (mostrando {len(df)} de {st.session_state.tenders_count})"
+            if remote_error:
+                st.info(f"No se pudo usar la precarga externa y se hizo búsqueda normal: {remote_error}")
+            st.success(st.session_state.msg_ok)
     except Exception as e:
         st.session_state.df = None
         st.session_state.msg_err = f"Error al buscar licitaciones: {e}"
@@ -628,7 +716,7 @@ def _tender_modal(tender_id: str, row_dict: dict):
         if pl.get("pcap_path") and os.path.exists(pl["pcap_path"]):
             with open(pl["pcap_path"], "rb") as f:
                 st.download_button(
-                    "⬇️ Descargar PCAP",
+                    "⬇️ Descargar Anuncio",
                     data=f,
                     file_name=os.path.basename(pl["pcap_path"]),
                     key=f"dl_pcap_{tender_id}",
