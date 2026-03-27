@@ -1,4 +1,4 @@
-name: Actualizar snapshot de licitaciones
+name: Actualizar snapshot de licitaciones v3
 
 on:
   workflow_dispatch:
