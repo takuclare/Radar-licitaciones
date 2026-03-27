@@ -1,0 +1,15 @@
+name: Cron test simple
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/10 * * * *'
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mostrar fecha
+        run: |
+          echo "Cron ejecutado en UTC:"
+          date -u
