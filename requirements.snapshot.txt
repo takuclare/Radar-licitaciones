@@ -1,7 +1,0 @@
-beautifulsoup4
-feedparser
-openpyxl
-pandas
-requests
-scikit-learn
-lxml
