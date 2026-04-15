@@ -1,12 +1,12 @@
 {
-  "generated_at_utc": "2026-04-15T18:45:09.153434Z",
+  "generated_at_utc": "2026-04-15T19:59:38.188971Z",
   "data_excel": "TRABAJOS AIRIA.xlsx",
   "company_corpus_len": 609,
   "limit_per_feed": 3000,
   "max_feed_pages": 15,
   "only_last_days": 2,
   "exclude_deadline_soon_days": 2,
-  "feed_entries": 0,
+  "feed_entries": 6000,
   "mode": "only_cpv_airia",
   "detected_count": 0,
   "rows": []
