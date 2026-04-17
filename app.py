@@ -5,6 +5,7 @@ import base64
 import io
 import json
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import pandas as pd
 import requests
@@ -39,16 +40,20 @@ FONDO_PATH = os.path.join(ASSETS_DIR, "fondo.png")
 def cached_company_corpus(excel_path: str):
     return load_company_corpus(excel_path)
 
-def live_fetch_tenders(limit_feed: int, max_feed_pages: int, only_cpv_airia: bool, company_corpus=None, progress_cb=None):
+MAX_LIMIT_FEED = 3000
+MAX_FEED_PAGES = 15
+
+def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool = False):
     return fetch_tenders(
-        limit_per_feed=limit_feed,
-        max_feed_pages=max_feed_pages,
+        limit_per_feed=MAX_LIMIT_FEED,
+        max_feed_pages=MAX_FEED_PAGES,
         only_last_days=2,
         exclude_deadline_soon_days=2,
-        only_priority_cpvs=only_cpv_airia,
+        only_priority_cpvs=False,
         progress_cb=progress_cb,
         pre_rank_corpus=company_corpus,
         deep_review_top_n=30,
+        bypass_cache=bypass_cache,
     )
 
 # ==============================
@@ -367,6 +372,8 @@ if "df" not in st.session_state:
     st.session_state.df = None
 if "tenders_count" not in st.session_state:
     st.session_state.tenders_count = 0
+if "filtered_count" not in st.session_state:
+    st.session_state.filtered_count = 0
 if "msg_ok" not in st.session_state:
     st.session_state.msg_ok = ""
 if "msg_err" not in st.session_state:
@@ -375,29 +382,19 @@ if "company_corpus_len" not in st.session_state:
     st.session_state.company_corpus_len = 0
 
 # ==============================
-# Sidebar: logo arriba + parámetros
+# Sidebar: logo arriba + búsqueda/filtros
 # ==============================
 with st.sidebar:
     st.markdown('<div class="sidebar-brand">', unsafe_allow_html=True)
     if os.path.exists(LOGO_PATH):
         st.image(LOGO_PATH, use_container_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    st.subheader("Parámetros")
-    top_k = st.slider("Cuantas licitaciones mostrar", 20, 200, 80, 10)
-    limit_feed = st.slider("Cuantas licitaciones detectar", 100, 3000, 1200, 100)
-    max_feed_pages = st.slider("Páginas ATOM máximas", 1, 15, 10, 1)
-    st.caption("El tiempo de búsqueda dependerá de los valores arriba seleccionados. Tiempo variable entre 1min - 20 min")
-
-    # La búsqueda principal siempre muestra progreso real; la caché rápida de Streamlit se evita aquí.
-    bypass_cache = st.checkbox("Revalidar portales (ignorar caché interna de expedientes)", value=False)
-    only_cpv_airia = st.checkbox("Solo CPVs Airia", value=False)
-    external_snapshot_available = bool(REMOTE_SNAPSHOT_URL_ALL)
-    use_external_snapshot = st.checkbox(
-        "Usar precarga externa (GitHub)",
-        value=external_snapshot_available,
-        disabled=not external_snapshot_available,
-        help="Lee una instantánea actualizada por GitHub Actions. Si no está disponible o está vieja, la app vuelve a la búsqueda normal.",
+    st.subheader("Búsqueda")
+    bypass_cache = st.checkbox(
+        "Buscar sin caché",
+        value=False,
+        help="Si la marcas, no se usará la precarga de GitHub y se lanzará una búsqueda completa en vivo. Puede tardar hasta unos 20 minutos.",
     )
 
     run = st.button("🔄 Buscar licitaciones", use_container_width=True)
@@ -440,6 +437,7 @@ st.session_state.company_corpus_len = len(company_corpus)
 # ==============================
 kpi_hist = st.session_state.company_corpus_len
 kpi_found = st.session_state.tenders_count
+kpi_filtered = len(st.session_state.df) if isinstance(st.session_state.df, pd.DataFrame) else 0
 st.markdown(
     f"""
     <div class="kpi-row">
@@ -452,8 +450,8 @@ st.markdown(
         <p class="kpi-value">{kpi_found}</p>
       </div>
       <div class="kpi">
-        <p class="kpi-label">Top N seleccionado</p>
-        <p class="kpi-value">{top_k}</p>
+        <p class="kpi-label">Mostradas</p>
+        <p class="kpi-value">{kpi_filtered}</p>
       </div>
     </div>
     """,
@@ -494,8 +492,8 @@ if run:
         used_remote_snapshot = False
         remote_error = None
 
-        if use_external_snapshot and not bypass_cache:
-            selected_snapshot_url = REMOTE_SNAPSHOT_URL_CPV if only_cpv_airia and REMOTE_SNAPSHOT_URL_CPV else REMOTE_SNAPSHOT_URL_ALL
+        if not bypass_cache:
+            selected_snapshot_url = REMOTE_SNAPSHOT_URL_ALL
             if selected_snapshot_url:
                 try:
                     p.progress(0.20, text="Consultando precarga externa…")
@@ -505,7 +503,7 @@ if run:
                         if not df_remote.empty:
                             total_detected = int(snapshot.get("detected_count", len(df_remote)) or len(df_remote))
                             generated_age = _snapshot_generated_minutes_ago(snapshot)
-                            shown_df = df_remote.head(top_k).copy()
+                            shown_df = df_remote.copy()
                             st.session_state.tenders_count = total_detected
                             st.session_state.df = shown_df
                             used_remote_snapshot = True
@@ -549,7 +547,7 @@ if run:
                         cache_hits=int(meta.get('cache_hits', 0) or 0),
                     )
 
-                tenders = live_fetch_tenders(limit_feed, max_feed_pages, only_cpv_airia, company_corpus=company_corpus, progress_cb=_cb)
+                tenders = live_fetch_tenders(company_corpus=company_corpus, progress_cb=_cb, bypass_cache=True)
 
             st.session_state.tenders_count = len(tenders)
 
@@ -557,7 +555,7 @@ if run:
             _render_meta(stage="Calculando ranking final", reviewed=len(tenders), total=max(len(tenders), 1), detected=len(tenders), feed_count=0, cache_hits=0)
 
             with st.spinner("Calculando ranking…"):
-                df = score_tenders(tenders, company_corpus, top_k=top_k)
+                df = score_tenders(tenders, company_corpus, top_k=None)
 
             st.session_state.df = df
             p.progress(1.0, text="Ranking generado ✅")
@@ -580,6 +578,119 @@ df = st.session_state.df
 if df is None:
     st.info("Usa el botón del panel izquierdo para traer licitaciones y generar el ranking.")
     st.stop()
+
+def _parse_amount_eur(value):
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    s = s.replace("EUR", "").replace("Euros", "").replace("€", "").strip()
+    s = s.replace(".", "").replace(",", ".")
+    m = re.search(r"-?\d+(?:\.\d+)?", s)
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except Exception:
+        return None
+
+def _extract_domain(url: str) -> str:
+    try:
+        return (urlparse(str(url)).netloc or "").lower()
+    except Exception:
+        return ""
+
+def _row_matches_airia_focus(row) -> bool:
+    text_parts = [
+        str(row.get("priority_cpvs", "") or ""),
+        str(row.get("boost_keywords", "") or ""),
+        str(row.get("super_keywords", "") or ""),
+        str(row.get("title", "") or ""),
+        str(row.get("summary", "") or ""),
+    ]
+    joined = " ".join(text_parts).lower()
+    needles = [
+        "71000000", "71200000", "71221000", "71222000", "71240000", "71242000",
+        "71247000", "71300000", "71317200",
+        "redaccion de proyecto", "dirección de obra", "direccion de obra",
+        "dirección de ejecución", "direccion de ejecucion",
+        "coordinación de seguridad", "coordinacion de seguridad",
+        "atdocv", "asistencia tecnica", "css", "df", "at"
+    ]
+    return any(n in joined for n in needles)
+
+df = df.copy()
+df["__amount_num"] = df.get("contract_value_no_vat", pd.Series(index=df.index)).apply(_parse_amount_eur)
+df["__domain"] = df.get("link", pd.Series(index=df.index)).apply(_extract_domain)
+
+with st.sidebar:
+    st.markdown("---")
+    st.subheader("Filtros")
+    text_query = st.text_input("Buscar por texto", placeholder="proyecto, dirección de obra, aeropuerto...")
+
+    amount_series = df["__amount_num"].dropna()
+    if not amount_series.empty:
+        min_amount = int(amount_series.min())
+        max_amount = int(amount_series.max())
+        selected_amount = st.slider(
+            "Importe sin IVA (€)",
+            min_value=min_amount,
+            max_value=max_amount,
+            value=(min_amount, max_amount),
+            step=max(1000, int((max_amount - min_amount) / 100) if max_amount > min_amount else 1000),
+        )
+    else:
+        selected_amount = None
+
+    domains = sorted([d for d in df["__domain"].dropna().unique().tolist() if d])
+    selected_domains = st.multiselect("Plataforma", domains, default=domains)
+
+    source_feeds = sorted([str(x) for x in df.get("source_feed", pd.Series(dtype=str)).dropna().unique().tolist() if str(x).strip()])
+    selected_feeds = st.multiselect("Feed origen", source_feeds, default=source_feeds)
+
+    keyword_options = sorted({x.strip() for cell in df.get("boost_keywords", pd.Series(dtype=str)).fillna("") for x in str(cell).split(",") if x.strip()})
+    selected_keywords = st.multiselect("Keywords detectadas", keyword_options)
+
+    only_with_amount = st.checkbox("Solo con importe identificado", value=False)
+    only_priority_cpv = st.checkbox("Solo CPVs prioritarios AIRIA", value=False)
+    only_airia_focus = st.checkbox("Solo enfoque AIRIA (CPV/keywords)", value=False)
+    hide_blocked = st.checkbox("Ocultar bloqueadas", value=True)
+
+filtered_df = df.copy()
+if text_query:
+    q = text_query.strip().lower()
+    mask = filtered_df.apply(
+        lambda r: q in " ".join([
+            str(r.get("title", "") or ""),
+            str(r.get("summary", "") or ""),
+            str(r.get("boost_keywords", "") or ""),
+            str(r.get("super_keywords", "") or ""),
+            str(r.get("priority_cpvs", "") or ""),
+            str(r.get("link", "") or ""),
+        ]).lower(),
+        axis=1
+    )
+    filtered_df = filtered_df[mask]
+if selected_amount is not None:
+    filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1).between(selected_amount[0], selected_amount[1])]
+if selected_domains:
+    filtered_df = filtered_df[filtered_df["__domain"].isin(selected_domains)]
+if selected_feeds:
+    filtered_df = filtered_df[filtered_df["source_feed"].astype(str).isin(selected_feeds)]
+if selected_keywords:
+    filtered_df = filtered_df[filtered_df["boost_keywords"].apply(lambda x: any(k.lower() in str(x).lower() for k in selected_keywords))]
+if only_with_amount:
+    filtered_df = filtered_df[filtered_df["__amount_num"].notna()]
+if only_priority_cpv:
+    filtered_df = filtered_df[filtered_df["priority_cpvs"].astype(str).str.strip() != ""]
+if only_airia_focus:
+    filtered_df = filtered_df[filtered_df.apply(_row_matches_airia_focus, axis=1)]
+if hide_blocked and "bloqueada" in filtered_df.columns:
+    filtered_df = filtered_df[~filtered_df["bloqueada"].fillna(False)]
+
+filtered_df = filtered_df.drop(columns=["__amount_num", "__domain"], errors="ignore").reset_index(drop=True)
+st.session_state.filtered_count = len(filtered_df)
 
 st.markdown("<div class='section-title'>Recomendadas</div>", unsafe_allow_html=True)
 
@@ -627,7 +738,7 @@ def _close_tender_modal() -> None:
 
 # Mapa rápido tender_id -> row (dict) para poder abrir modal sin depender del loop
 _tender_map = {}
-for _i, _row in df.iterrows():
+for _i, _row in filtered_df.iterrows():
     _tid = _tender_id_from_row(_row)
     _tender_map[_tid] = _row.to_dict()
 
@@ -837,7 +948,11 @@ def _tender_modal(tender_id: str, row_dict: dict):
 # Feed de licitaciones
 st.markdown("<div class='tender-list'>", unsafe_allow_html=True)
 
-for i, row in df.iterrows():
+if filtered_df.empty:
+    st.info("No hay licitaciones que cumplan los filtros actuales.")
+
+
+for i, row in filtered_df.iterrows():
     tender_id = _tender_id_from_row(row)
     row_dict = _tender_map.get(tender_id, row.to_dict())
 
