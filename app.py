@@ -601,6 +601,36 @@ def _extract_domain(url: str) -> str:
     except Exception:
         return ""
 
+
+def _platform_label(domain: str) -> str:
+    d = (domain or "").lower().strip()
+    mapping = {
+        "contrataciondelestado.es": "Contratación del Estado",
+        "www.contrataciondelestado.es": "Contratación del Estado",
+        "contrataciondelsectorpublico.gob.es": "Contratación del Estado",
+        "www.contrataciondelsectorpublico.gob.es": "Contratación del Estado",
+        "www.contratosdelarioja.org": "La Rioja",
+        "contratosdelarioja.org": "La Rioja",
+        "www.juntadeandalucia.es": "Junta de Andalucía",
+        "juntadeandalucia.es": "Junta de Andalucía",
+        "www.contractaciopublica.cat": "Cataluña",
+        "contractaciopublica.cat": "Cataluña",
+        "hacienda.navarra.es": "Navarra",
+        "www.hacienda.navarra.es": "Navarra",
+        "contratos-publicos.comunidad.madrid": "Comunidad de Madrid",
+        "www.contratos-publicos.comunidad.madrid": "Comunidad de Madrid",
+        "www.euskadi.eus": "Euskadi",
+        "euskadi.eus": "Euskadi",
+        "www.contratacion.gal": "Galicia",
+        "contratacion.gal": "Galicia",
+    }
+    if d in mapping:
+        return mapping[d]
+    clean = d.replace('www.', '')
+    if not clean:
+        return 'Otra plataforma'
+    return clean
+
 def _row_matches_airia_focus(row) -> bool:
     text_parts = [
         str(row.get("priority_cpvs", "") or ""),
@@ -623,6 +653,15 @@ def _row_matches_airia_focus(row) -> bool:
 df = df.copy()
 df["__amount_num"] = df.get("contract_value_no_vat", pd.Series(index=df.index)).apply(_parse_amount_eur)
 df["__domain"] = df.get("link", pd.Series(index=df.index)).apply(_extract_domain)
+df["__platform_label"] = df["__domain"].apply(_platform_label)
+
+platform_options = []
+seen_labels = set()
+for domain in sorted([d for d in df["__domain"].dropna().unique().tolist() if d]):
+    label = _platform_label(domain)
+    if label not in seen_labels:
+        platform_options.append((label, domain))
+        seen_labels.add(label)
 
 with st.sidebar:
     st.markdown("---")
@@ -643,19 +682,13 @@ with st.sidebar:
     else:
         selected_amount = None
 
-    domains = sorted([d for d in df["__domain"].dropna().unique().tolist() if d])
-    selected_domains = st.multiselect("Plataforma", domains, default=domains)
-
-    source_feeds = sorted([str(x) for x in df.get("source_feed", pd.Series(dtype=str)).dropna().unique().tolist() if str(x).strip()])
-    selected_feeds = st.multiselect("Feed origen", source_feeds, default=source_feeds)
-
-    keyword_options = sorted({x.strip() for cell in df.get("boost_keywords", pd.Series(dtype=str)).fillna("") for x in str(cell).split(",") if x.strip()})
-    selected_keywords = st.multiselect("Keywords detectadas", keyword_options)
-
-    only_with_amount = st.checkbox("Solo con importe identificado", value=False)
-    only_priority_cpv = st.checkbox("Solo CPVs prioritarios AIRIA", value=False)
-    only_airia_focus = st.checkbox("Solo enfoque AIRIA (CPV/keywords)", value=False)
-    hide_blocked = st.checkbox("Ocultar bloqueadas", value=True)
+    with st.expander("Plataforma", expanded=False):
+        st.caption("Todas vienen seleccionadas por defecto.")
+        selected_platform_labels = []
+        for label, _domain in platform_options:
+            key = f"platform_filter_{hashlib.md5(label.encode('utf-8')).hexdigest()[:10]}"
+            if st.checkbox(label, value=True, key=key):
+                selected_platform_labels.append(label)
 
 filtered_df = df.copy()
 if text_query:
@@ -674,22 +707,12 @@ if text_query:
     filtered_df = filtered_df[mask]
 if selected_amount is not None:
     filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1).between(selected_amount[0], selected_amount[1])]
-if selected_domains:
-    filtered_df = filtered_df[filtered_df["__domain"].isin(selected_domains)]
-if selected_feeds:
-    filtered_df = filtered_df[filtered_df["source_feed"].astype(str).isin(selected_feeds)]
-if selected_keywords:
-    filtered_df = filtered_df[filtered_df["boost_keywords"].apply(lambda x: any(k.lower() in str(x).lower() for k in selected_keywords))]
-if only_with_amount:
-    filtered_df = filtered_df[filtered_df["__amount_num"].notna()]
-if only_priority_cpv:
-    filtered_df = filtered_df[filtered_df["priority_cpvs"].astype(str).str.strip() != ""]
-if only_airia_focus:
-    filtered_df = filtered_df[filtered_df.apply(_row_matches_airia_focus, axis=1)]
-if hide_blocked and "bloqueada" in filtered_df.columns:
-    filtered_df = filtered_df[~filtered_df["bloqueada"].fillna(False)]
+if selected_platform_labels:
+    filtered_df = filtered_df[filtered_df["__platform_label"].isin(selected_platform_labels)]
+else:
+    filtered_df = filtered_df.iloc[0:0]
 
-filtered_df = filtered_df.drop(columns=["__amount_num", "__domain"], errors="ignore").reset_index(drop=True)
+filtered_df = filtered_df.drop(columns=["__amount_num", "__domain", "__platform_label"], errors="ignore").reset_index(drop=True)
 st.session_state.filtered_count = len(filtered_df)
 
 st.markdown("<div class='section-title'>Recomendadas</div>", unsafe_allow_html=True)
