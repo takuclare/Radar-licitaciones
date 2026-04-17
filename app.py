@@ -380,10 +380,6 @@ if "msg_err" not in st.session_state:
     st.session_state.msg_err = ""
 if "company_corpus_len" not in st.session_state:
     st.session_state.company_corpus_len = 0
-if "filtered_count" not in st.session_state:
-    st.session_state.filtered_count = 0
-if "current_results_page" not in st.session_state:
-    st.session_state.current_results_page = 1
 
 # ==============================
 # Sidebar: logo arriba + búsqueda/filtros
@@ -441,7 +437,7 @@ st.session_state.company_corpus_len = len(company_corpus)
 # ==============================
 kpi_hist = st.session_state.company_corpus_len
 kpi_found = st.session_state.tenders_count
-kpi_filtered = int(st.session_state.get("filtered_count", len(st.session_state.df) if isinstance(st.session_state.df, pd.DataFrame) else 0) or 0)
+kpi_filtered = len(st.session_state.df) if isinstance(st.session_state.df, pd.DataFrame) else 0
 st.markdown(
     f"""
     <div class="kpi-row">
@@ -693,23 +689,6 @@ for _, row in df.iterrows():
             seen_keywords.add(key_norm)
 keyword_options = sorted(keyword_options, key=lambda x: x.lower())
 
-def _parse_amount_input(value: str):
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    raw = re.sub(r"[^0-9,\.]", "", raw)
-    if not raw:
-        return None
-    if "," in raw and "." in raw:
-        raw = raw.replace(".", "").replace(",", ".")
-    elif "," in raw:
-        raw = raw.replace(".", "").replace(",", ".")
-    try:
-        return float(raw)
-    except Exception:
-        return None
-
-
 with st.sidebar:
     st.markdown("---")
     st.subheader("Filtros")
@@ -717,15 +696,26 @@ with st.sidebar:
 
     amount_series = df["__amount_num"].dropna()
     st.markdown("**Importe sin IVA (€)**")
-    min_amount_input = ""
-    max_amount_input = ""
+    amount_min_raw = ""
+    amount_max_raw = ""
     if not amount_series.empty:
-        col_min, col_max = st.columns(2)
-        with col_min:
-            min_amount_input = st.text_input("MIN", value="", placeholder="Sin mínimo")
-        with col_max:
-            max_amount_input = st.text_input("MAX", value="", placeholder="Sin máximo")
+        cmin, cmax = st.columns(2)
+        with cmin:
+            amount_min_raw = st.text_input(
+                "MIN",
+                value="",
+                placeholder="Sin mínimo",
+                key="amount_min_filter",
+            )
+        with cmax:
+            amount_max_raw = st.text_input(
+                "MAX",
+                value="",
+                placeholder="Sin máximo",
+                key="amount_max_filter",
+            )
         st.caption("Déjalo vacío para no filtrar por importe.")
+    selected_amount = None
 
     with st.expander("Plataforma", expanded=False):
         st.caption("Todas vienen seleccionadas por defecto.")
@@ -758,12 +748,30 @@ if text_query:
         axis=1
     )
     filtered_df = filtered_df[mask]
-min_amount_value = _parse_amount_input(min_amount_input) if 'min_amount_input' in locals() else None
-max_amount_value = _parse_amount_input(max_amount_input) if 'max_amount_input' in locals() else None
-if min_amount_value is not None:
-    filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1) >= min_amount_value]
-if max_amount_value is not None:
-    filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1) <= max_amount_value]
+def _parse_sidebar_amount(value: str):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    cleaned = raw.replace("€", "").replace("EUR", "").replace("eur", "")
+    cleaned = cleaned.replace(" ", "")
+    if "," in cleaned and "." in cleaned:
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    elif "," in cleaned:
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    try:
+        return float(cleaned)
+    except Exception:
+        return None
+
+amount_min_value = _parse_sidebar_amount(amount_min_raw)
+amount_max_value = _parse_sidebar_amount(amount_max_raw)
+if amount_min_value is not None:
+    filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1) >= amount_min_value]
+if amount_max_value is not None:
+    filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1) <= amount_max_value]
 if selected_platform_labels:
     filtered_df = filtered_df[filtered_df["__platform_label"].isin(selected_platform_labels)]
 else:
@@ -783,41 +791,7 @@ if keyword_options:
 filtered_df = filtered_df.drop(columns=["__amount_num", "__domain", "__platform_label"], errors="ignore").reset_index(drop=True)
 st.session_state.filtered_count = len(filtered_df)
 
-RESULTS_PER_PAGE = 20
-total_filtered = len(filtered_df)
-total_pages = max(1, (total_filtered + RESULTS_PER_PAGE - 1) // RESULTS_PER_PAGE)
-
-current_page = int(st.session_state.get("current_results_page", 1) or 1)
-current_page = max(1, min(current_page, total_pages))
-st.session_state.current_results_page = current_page
-
 st.markdown("<div class='section-title'>Recomendadas</div>", unsafe_allow_html=True)
-
-if total_filtered > 0:
-    pag_col1, pag_col2, pag_col3 = st.columns([0.34, 0.33, 0.33])
-    with pag_col1:
-        st.caption(f"Mostrando {((current_page - 1) * RESULTS_PER_PAGE) + 1}-{min(current_page * RESULTS_PER_PAGE, total_filtered)} de {total_filtered} licitaciones")
-    with pag_col2:
-        selected_page = st.number_input("Página", min_value=1, max_value=total_pages, value=current_page, step=1, key="results_page_number")
-    with pag_col3:
-        nav_prev, nav_next = st.columns(2)
-        with nav_prev:
-            if st.button("← Anterior", use_container_width=True, disabled=current_page <= 1, key="page_prev_btn"):
-                st.session_state.current_results_page = max(1, current_page - 1)
-                st.rerun()
-        with nav_next:
-            if st.button("Siguiente →", use_container_width=True, disabled=current_page >= total_pages, key="page_next_btn"):
-                st.session_state.current_results_page = min(total_pages, current_page + 1)
-                st.rerun()
-
-    if int(selected_page) != current_page:
-        st.session_state.current_results_page = int(selected_page)
-        st.rerun()
-
-page_start = (st.session_state.current_results_page - 1) * RESULTS_PER_PAGE
-page_end = page_start + RESULTS_PER_PAGE
-paged_df = filtered_df.iloc[page_start:page_end].reset_index(drop=True)
-
 
 # ==============================
 # Carpetas y plantillas
