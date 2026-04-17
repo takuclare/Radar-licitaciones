@@ -695,18 +695,27 @@ with st.sidebar:
     text_query = st.text_input("Buscar por texto", placeholder="proyecto, dirección de obra, aeropuerto...")
 
     amount_series = df["__amount_num"].dropna()
+    st.markdown("**Importe sin IVA (€)**")
+    amount_min_raw = ""
+    amount_max_raw = ""
     if not amount_series.empty:
-        min_amount = int(amount_series.min())
-        max_amount = int(amount_series.max())
-        selected_amount = st.slider(
-            "Importe sin IVA (€)",
-            min_value=min_amount,
-            max_value=max_amount,
-            value=(min_amount, max_amount),
-            step=max(1000, int((max_amount - min_amount) / 100) if max_amount > min_amount else 1000),
-        )
-    else:
-        selected_amount = None
+        cmin, cmax = st.columns(2)
+        with cmin:
+            amount_min_raw = st.text_input(
+                "MIN",
+                value="",
+                placeholder="Sin mínimo",
+                key="amount_min_filter",
+            )
+        with cmax:
+            amount_max_raw = st.text_input(
+                "MAX",
+                value="",
+                placeholder="Sin máximo",
+                key="amount_max_filter",
+            )
+        st.caption("Déjalo vacío para no filtrar por importe.")
+    selected_amount = None
 
     with st.expander("Plataforma", expanded=False):
         st.caption("Todas vienen seleccionadas por defecto.")
@@ -739,8 +748,30 @@ if text_query:
         axis=1
     )
     filtered_df = filtered_df[mask]
-if selected_amount is not None:
-    filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1).between(selected_amount[0], selected_amount[1])]
+def _parse_sidebar_amount(value: str):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    cleaned = raw.replace("€", "").replace("EUR", "").replace("eur", "")
+    cleaned = cleaned.replace(" ", "")
+    if "," in cleaned and "." in cleaned:
+        if cleaned.rfind(",") > cleaned.rfind("."):
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    elif "," in cleaned:
+        cleaned = cleaned.replace(".", "").replace(",", ".")
+    try:
+        return float(cleaned)
+    except Exception:
+        return None
+
+amount_min_value = _parse_sidebar_amount(amount_min_raw)
+amount_max_value = _parse_sidebar_amount(amount_max_raw)
+if amount_min_value is not None:
+    filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1) >= amount_min_value]
+if amount_max_value is not None:
+    filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1) <= amount_max_value]
 if selected_platform_labels:
     filtered_df = filtered_df[filtered_df["__platform_label"].isin(selected_platform_labels)]
 else:
