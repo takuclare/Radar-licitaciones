@@ -663,6 +663,32 @@ for domain in sorted([d for d in df["__domain"].dropna().unique().tolist() if d]
         platform_options.append((label, domain))
         seen_labels.add(label)
 
+def _extract_detected_keywords(row):
+    values = []
+    for col in ["boost_keywords", "super_keywords", "keywords", "keyword_hits"]:
+        raw = row.get(col, "")
+        if raw is None:
+            continue
+        if isinstance(raw, (list, tuple, set)):
+            parts = list(raw)
+        else:
+            parts = re.split(r"[,;|]", str(raw))
+        for part in parts:
+            kw = str(part).strip()
+            if kw:
+                values.append(kw)
+    return values
+
+keyword_options = []
+seen_keywords = set()
+for _, row in df.iterrows():
+    for kw in _extract_detected_keywords(row):
+        key_norm = kw.lower()
+        if key_norm not in seen_keywords:
+            keyword_options.append(kw)
+            seen_keywords.add(key_norm)
+keyword_options = sorted(keyword_options, key=lambda x: x.lower())
+
 with st.sidebar:
     st.markdown("---")
     st.subheader("Filtros")
@@ -690,6 +716,14 @@ with st.sidebar:
             if st.checkbox(label, value=True, key=key):
                 selected_platform_labels.append(label)
 
+    with st.expander("Palabras clave detectadas", expanded=False):
+        st.caption("Todas vienen seleccionadas por defecto.")
+        selected_keywords = []
+        for kw in keyword_options:
+            key = f"keyword_filter_{hashlib.md5(kw.encode('utf-8')).hexdigest()[:10]}"
+            if st.checkbox(kw, value=True, key=key):
+                selected_keywords.append(kw)
+
 filtered_df = df.copy()
 if text_query:
     q = text_query.strip().lower()
@@ -711,6 +745,17 @@ if selected_platform_labels:
     filtered_df = filtered_df[filtered_df["__platform_label"].isin(selected_platform_labels)]
 else:
     filtered_df = filtered_df.iloc[0:0]
+if keyword_options:
+    if selected_keywords:
+        selected_keywords_norm = {k.lower() for k in selected_keywords}
+        filtered_df = filtered_df[
+            filtered_df.apply(
+                lambda r: any(k.lower() in selected_keywords_norm for k in _extract_detected_keywords(r)),
+                axis=1,
+            )
+        ]
+    else:
+        filtered_df = filtered_df.iloc[0:0]
 
 filtered_df = filtered_df.drop(columns=["__amount_num", "__domain", "__platform_label"], errors="ignore").reset_index(drop=True)
 st.session_state.filtered_count = len(filtered_df)
