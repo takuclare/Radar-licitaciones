@@ -529,35 +529,61 @@ def _is_csp_host(link: str) -> bool:
 
 def _extract_csp_publication_from_docs_table(soup: BeautifulSoup) -> Optional[datetime]:
     """
-    Busca la fila de "Anuncio de licitación" dentro de Anuncios/Documentos,
-    y devuelve la fecha más antigua entre esas filas.
+    Devuelve la fecha REAL de publicación inicial de la licitación en CSP.
+
+    Regla:
+      - mirar solo la tabla "Anuncios y Documentos"
+      - aceptar únicamente filas de "Anuncio de Licitación" (DOC_CN)
+      - si no existiera, aceptar como fallback "Pliego" (DOC_CD)
+      - ignorar completamente "Otros Documentos" / DOC_GEN / actas / informes
+
+    Con esto evitamos colar expedientes antiguos que reaparecen por publicar
+    informes de valoración, actas u otros documentos posteriores.
     """
     if soup is None:
         return None
 
-    candidates: List[datetime] = []
-    date_re = re.compile(r"(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}:\d{2})(?::(\d{2}))?")
+    table = soup.find("table", id="myTablaDetalleVISUOE")
+    if table is None:
+        return None
 
-    for tr in soup.find_all("tr"):
-        txt = tr.get_text(" ", strip=True)
-        m = date_re.search(txt)
+    def _row_dt(tr) -> Optional[datetime]:
+        first_td = tr.find("td")
+        if first_td is None:
+            return None
+        txt = first_td.get_text(" ", strip=True)
+        m = re.search(r"(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}:\d{2})(?::(\d{2}))?", txt)
         if not m:
-            continue
-
+            return None
         d = m.group(1)
         hhmm = m.group(2)
         ss = m.group(3)
-        dt = _parse_es_date_any(f"{d} {hhmm}:{ss}") if ss else _parse_es_date_any(f"{d} {hhmm}")
+        return _parse_es_date_any(f"{d} {hhmm}:{ss}") if ss else _parse_es_date_any(f"{d} {hhmm}")
+
+    anuncio_candidates: List[datetime] = []
+    pliego_candidates: List[datetime] = []
+
+    tbody = table.find("tbody") or table
+    for tr in tbody.find_all("tr"):
+        tds = tr.find_all("td")
+        if len(tds) < 2:
+            continue
+
+        doc_txt = _normalize(tds[1].get_text(" ", strip=True))
+        dt = _row_dt(tr)
         if not dt:
             continue
 
-        norm = _normalize(txt)
-        is_anuncio = ("anuncio" in norm) and ("licitaci" in norm)
-        is_excluded = any(x in norm for x in ["adjudic", "formaliz", "desist", "anul", "resoluc", "prorro", "modific"])
-        if is_anuncio and not is_excluded:
-            candidates.append(dt)
+        if ("anuncio" in doc_txt) and ("licitaci" in doc_txt):
+            anuncio_candidates.append(dt)
+        elif "pliego" in doc_txt:
+            pliego_candidates.append(dt)
 
-    return min(candidates) if candidates else None
+    if anuncio_candidates:
+        return min(anuncio_candidates)
+    if pliego_candidates:
+        return min(pliego_candidates)
+    return None
 
 
 def _extract_csp_status_robust(html: str, soup: BeautifulSoup) -> Optional[str]:
@@ -933,14 +959,20 @@ def fetch_tenders(
             top_review_links = set(t.link for t in preliminary_tenders[:deep_review_top_n])
 
     cached_review_links = set()
+    csp_review_links = set()
     for c in candidates:
         link = c[2]
+        if _is_csp_host(link):
+            csp_review_links.add(link)
         cached = _CACHE.get(link)
         if isinstance(cached, dict) and int(cached.get("v", 1) or 1) >= CACHE_VERSION:
             cache_hits += 1
             cached_review_links.add(link)
 
-    review_links = list(cached_review_links | top_review_links)
+    # Importante: todos los expedientes CSP deben pasar revisión profunda.
+    # Si no, algunos expedientes antiguos pueden colarse por el updated reciente
+    # del feed aunque su anuncio de licitación/pliegos sea antiguo.
+    review_links = list(cached_review_links | top_review_links | csp_review_links)
     review_total = len(review_links)
     portal_map: Dict[str, Tuple[Optional[datetime], Optional[datetime], Optional[str]]] = {}
     workers = max(2, min(int(max_workers or 12), 20))
