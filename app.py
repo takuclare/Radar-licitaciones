@@ -4,7 +4,6 @@ import hashlib
 import base64
 import io
 import json
-import html
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -44,7 +43,7 @@ def cached_company_corpus(excel_path: str):
 MAX_LIMIT_FEED = 3000
 MAX_FEED_PAGES = 15
 
-def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool = False):
+def live_fetch_tenders(company_corpus=None, progress_cb=None):
     return fetch_tenders(
         limit_per_feed=MAX_LIMIT_FEED,
         max_feed_pages=MAX_FEED_PAGES,
@@ -54,7 +53,6 @@ def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool
         progress_cb=progress_cb,
         pre_rank_corpus=company_corpus,
         deep_review_top_n=30,
-        bypass_cache=bypass_cache,
     )
 
 # ==============================
@@ -434,32 +432,6 @@ with st.spinner("Leyendo vuestro histórico (Excel)…"):
 st.session_state.company_corpus_len = len(company_corpus)
 
 # ==============================
-# KPI row (siempre)
-# ==============================
-kpi_hist = st.session_state.company_corpus_len
-kpi_found = st.session_state.tenders_count
-kpi_filtered = len(st.session_state.df) if isinstance(st.session_state.df, pd.DataFrame) else 0
-st.markdown(
-    f"""
-    <div class="kpi-row">
-      <div class="kpi">
-        <p class="kpi-label">Histórico</p>
-        <p class="kpi-value">{kpi_hist}</p>
-      </div>
-      <div class="kpi">
-        <p class="kpi-label">Licitaciones detectadas</p>
-        <p class="kpi-value">{kpi_found}</p>
-      </div>
-      <div class="kpi">
-        <p class="kpi-label">Mostradas</p>
-        <p class="kpi-value">{kpi_filtered}</p>
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-# ==============================
 # Buscar licitaciones (optimizado)
 # ==============================
 if run:
@@ -505,21 +477,27 @@ if run:
                             total_detected = int(snapshot.get("detected_count", len(df_remote)) or len(df_remote))
                             generated_age = _snapshot_generated_minutes_ago(snapshot)
                             shown_df = df_remote.copy()
-                            st.session_state.tenders_count = total_detected
-                            st.session_state.df = shown_df
-                            used_remote_snapshot = True
-                            p.progress(1.0, text="Resultados cargados desde precarga externa ✅")
-                            _render_meta(
-                                stage="Precarga externa",
-                                reviewed=total_detected,
-                                total=total_detected,
-                                detected=total_detected,
-                                feed_count=int(snapshot.get("feed_entries", 0) or 0),
-                                cache_hits=total_detected,
-                            )
-                            age_txt = f"hace {generated_age:.1f} min" if generated_age is not None else "reciente"
-                            st.session_state.msg_ok = f"Ranking cargado desde precarga externa ✅ (mostrando {len(shown_df)} de {total_detected}, generado {age_txt})"
-                            st.success(st.session_state.msg_ok)
+
+                            # Solo usamos la precarga si trae realmente TODAS las licitaciones detectadas.
+                            # Si el snapshot viene recortado, la interfaz debe enseñar el conjunto completo.
+                            if len(shown_df) == total_detected:
+                                st.session_state.tenders_count = total_detected
+                                st.session_state.df = shown_df
+                                used_remote_snapshot = True
+                                p.progress(1.0, text="Resultados cargados desde precarga externa ✅")
+                                _render_meta(
+                                    stage="Precarga externa",
+                                    reviewed=total_detected,
+                                    total=total_detected,
+                                    detected=total_detected,
+                                    feed_count=int(snapshot.get("feed_entries", 0) or 0),
+                                    cache_hits=total_detected,
+                                )
+                                age_txt = f"hace {generated_age:.1f} min" if generated_age is not None else "reciente"
+                                st.session_state.msg_ok = f"Ranking cargado desde precarga externa ✅ (mostrando {len(shown_df)} de {total_detected}, generado {age_txt})"
+                                st.success(st.session_state.msg_ok)
+                            else:
+                                remote_error = f"Precarga externa parcial: trae {len(shown_df)} filas pero declara {total_detected} detectadas. Se fuerza búsqueda completa."
                 except Exception as e:
                     remote_error = str(e)
 
@@ -548,7 +526,7 @@ if run:
                         cache_hits=int(meta.get('cache_hits', 0) or 0),
                     )
 
-                tenders = live_fetch_tenders(company_corpus=company_corpus, progress_cb=_cb, bypass_cache=True)
+                tenders = live_fetch_tenders(company_corpus=company_corpus, progress_cb=_cb)
 
             st.session_state.tenders_count = len(tenders)
 
@@ -792,6 +770,34 @@ if keyword_options:
 filtered_df = filtered_df.drop(columns=["__amount_num", "__domain", "__platform_label"], errors="ignore").reset_index(drop=True)
 st.session_state.filtered_count = len(filtered_df)
 
+# ==============================
+# KPI row (siempre, ya sincronizada con la búsqueda y los filtros actuales)
+# ==============================
+kpi_hist = st.session_state.company_corpus_len
+kpi_found = st.session_state.tenders_count
+kpi_filtered = len(filtered_df)
+st.markdown(
+    f"""
+    <div class="kpi-row">
+      <div class="kpi">
+        <p class="kpi-label">Histórico</p>
+        <p class="kpi-value">{kpi_hist}</p>
+      </div>
+      <div class="kpi">
+        <p class="kpi-label">Licitaciones detectadas</p>
+        <p class="kpi-value">{kpi_found}</p>
+      </div>
+      <div class="kpi">
+        <p class="kpi-label">Mostradas</p>
+        <p class="kpi-value">{kpi_filtered}</p>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+st.caption(f"Se están mostrando {kpi_filtered} licitaciones en pantalla de un total de {kpi_found} detectadas.")
+
 st.markdown("<div class='section-title'>Recomendadas</div>", unsafe_allow_html=True)
 
 # ==============================
@@ -817,10 +823,6 @@ def _safe_filename(name: str, default: str = "archivo.pdf") -> str:
 
 def _pill(text: str) -> str:
     return f"<span class='pill'>{text}</span>"
-
-
-def _html_escape(value) -> str:
-    return html.escape(str(value or ""), quote=True)
 
 # Mantener expanders abiertos al pulsar botones (evita 'parpadeo' / duplicados en el primer click)
 def _open_expander(open_key: str) -> None:
@@ -875,24 +877,24 @@ def _tender_modal(tender_id: str, row_dict: dict):
     estimated_value = row_dict.get("estimated_value", "") or ""
     contract_value_no_vat = row_dict.get("contract_value_no_vat", "") or ""
 
-    st.markdown(f"<div class='modal-title'>{_html_escape(title)}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='modal-title'>{title}</div>", unsafe_allow_html=True)
 
     pills = []
     if pub:
-        pills.append(_pill(_html_escape(f"Publicado: {pub}")))
+        pills.append(_pill(f"Publicado: {pub}"))
     if deadline:
-        pills.append(_pill(_html_escape(f"Plazo: {deadline}")))
+        pills.append(_pill(f"Plazo: {deadline}"))
     if estimated_value:
-        pills.append(_pill(_html_escape(f"Valor estimado: {estimated_value}")))
+        pills.append(_pill(f"Valor estimado: {estimated_value}"))
     if contract_value_no_vat:
-        pills.append(_pill(_html_escape(f"Importe sin IVA: {contract_value_no_vat}")))
+        pills.append(_pill(f"Importe sin IVA: {contract_value_no_vat}"))
     if boost_kw:
-        pills.append(_pill(_html_escape(f"Keywords: {boost_kw}")))
+        pills.append(_pill(f"Keywords: {boost_kw}"))
     if pills:
         st.markdown("<div class='meta'>" + "".join(pills) + "</div>", unsafe_allow_html=True)
 
     if link:
-        st.markdown(f"**Enlace oficial:** {_html_escape(link)}")
+        st.markdown(f"**Enlace oficial:** {link}")
 
     status_box = st.empty()
     if st.session_state.get(status_key):
@@ -1072,26 +1074,24 @@ for i, row in filtered_df.iterrows():
     with outer_left:
         badges = []
         if pub:
-            badges.append(f"<span class='tender-badge'>Publicado: {_html_escape(pub)}</span>")
+            badges.append(f"<span class='tender-badge'>Publicado: {pub}</span>")
         if deadline:
-            badges.append(f"<span class='tender-badge'>Plazo: {_html_escape(deadline)}</span>")
+            badges.append(f"<span class='tender-badge'>Plazo: {deadline}</span>")
         if estimated_value:
-            badges.append(f"<span class='tender-badge money'>Valor estimado: {_html_escape(estimated_value)}</span>")
+            badges.append(f"<span class='tender-badge money'>Valor estimado: {estimated_value}</span>")
         if contract_value_no_vat:
-            badges.append(f"<span class='tender-badge money'>Importe sin IVA: {_html_escape(contract_value_no_vat)}</span>")
+            badges.append(f"<span class='tender-badge money'>Importe sin IVA: {contract_value_no_vat}</span>")
         if boost_kw:
-            badges.append(f"<span class='tender-badge'>Keywords: {_html_escape(boost_kw)}</span>")
+            badges.append(f"<span class='tender-badge'>Keywords: {boost_kw}</span>")
 
-        safe_title = _html_escape(title)
-        safe_link = _html_escape(link)
-        html_card = (
+        html = (
             "<div class='tender-shell'><div class='tender-box'>"
-            f"<div class='tender-title-html'>{safe_title}</div>"
-            + (f"<div class='tender-link-html'>{safe_link}</div>" if safe_link else "")
+            f"<div class='tender-title-html'>{title}</div>"
+            + (f"<div class='tender-link-html'>{link}</div>" if link else "")
             + (f"<div class='tender-badges'>{''.join(badges)}</div>" if badges else "")
             + "</div></div>"
         )
-        st.markdown(html_card, unsafe_allow_html=True)
+        st.markdown(html, unsafe_allow_html=True)
     with outer_right:
         st.markdown("<div class='tender-open-wrap'>", unsafe_allow_html=True)
         if st.button("Abrir", key=f"open_btn_{tender_id}", use_container_width=True):
