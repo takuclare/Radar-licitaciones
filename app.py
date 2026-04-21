@@ -61,9 +61,25 @@ def live_fetch_tenders(company_corpus=None, progress_cb=None, apply_airia_filter
 # Snapshot remoto (GitHub branch snapshot-data)
 # ==============================
 
-REMOTE_SNAPSHOT_URL_ALL = os.getenv("REMOTE_SNAPSHOT_URL_ALL", "").strip()
-REMOTE_SNAPSHOT_URL_CPV = os.getenv("REMOTE_SNAPSHOT_URL_CPV", "").strip()
-REMOTE_SNAPSHOT_MAX_AGE_MIN = int(os.getenv("REMOTE_SNAPSHOT_MAX_AGE_MIN", "20") or 20)
+def _get_secret_or_env(name: str, default: str = "") -> str:
+    val = os.getenv(name)
+    if val is not None and str(val).strip() != "":
+        return str(val).strip()
+    try:
+        if name in st.secrets:
+            sec = st.secrets[name]
+            if sec is not None and str(sec).strip() != "":
+                return str(sec).strip()
+    except Exception:
+        pass
+    return default
+
+REMOTE_SNAPSHOT_URL_ALL = _get_secret_or_env("REMOTE_SNAPSHOT_URL_ALL", "")
+REMOTE_SNAPSHOT_URL_CPV = _get_secret_or_env("REMOTE_SNAPSHOT_URL_CPV", "")
+try:
+    REMOTE_SNAPSHOT_MAX_AGE_MIN = int(_get_secret_or_env("REMOTE_SNAPSHOT_MAX_AGE_MIN", "20") or 20)
+except Exception:
+    REMOTE_SNAPSHOT_MAX_AGE_MIN = 20
 
 @st.cache_data(show_spinner=False, ttl=120)
 def _load_remote_snapshot(url: str):
@@ -598,7 +614,7 @@ if apply_airia_filters and st.session_state.raw_df is not None and st.session_st
         if snapshot_filtered_error:
             st.warning(f"No se pudo cargar la precarga externa de filtros Airia: {snapshot_filtered_error}")
         else:
-            st.warning("No hay precarga externa de filtros Airia disponible. Configura REMOTE_SNAPSHOT_URL_CPV para que el filtrado sea instantáneo.")
+            st.warning("No se ha podido leer la precarga externa de filtros Airia. Revisa REMOTE_SNAPSHOT_URL_CPV en Secrets/variables del despliegue.")
 
 if apply_airia_filters:
     st.session_state.df = st.session_state.airia_df if st.session_state.airia_df is not None else None
