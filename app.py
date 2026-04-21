@@ -591,42 +591,15 @@ if run:
         st.error(st.session_state.msg_err)
 
 # Si el usuario activa filtros Airia después de cargar las licitaciones completas,
-# aplicamos el filtrado INSTANTÁNEO sobre la precarga completa ya cargada.
-# No dependemos de REMOTE_SNAPSHOT_URL_CPV porque ese snapshot puede venir vacío o desactualizado.
-def _build_airia_filtered_df(raw_df: pd.DataFrame) -> pd.DataFrame:
-    if raw_df is None or raw_df.empty:
-        return pd.DataFrame()
-
-    df_airia = raw_df.copy()
-
-    def _is_airia_row(row) -> bool:
-        # Coincidencia por foco Airia (CPV/keywords/título/resumen)
-        if _row_matches_airia_focus(row):
-            return True
-
-        # Compatibilidad adicional por columnas de scoring ya presentes en el snapshot
-        for col in ("priority_cpvs", "super_keywords", "boost_keywords"):
-            val = str(row.get(col, "") or "").strip()
-            if val:
-                return True
-
-        return False
-
-    mask_airia = df_airia.apply(_is_airia_row, axis=1)
-    df_airia = df_airia[mask_airia].copy()
-
-    # Excluimos filas bloqueadas por palabras no deseadas cuando el snapshot ya trae esa información
-    if "bloqueada" in df_airia.columns:
-        df_airia = df_airia[~df_airia["bloqueada"].fillna(False)]
-    elif "blocked_hits" in df_airia.columns:
-        df_airia = df_airia[df_airia["blocked_hits"].fillna("").astype(str).str.strip() == ""]
-
-    return df_airia.reset_index(drop=True)
-
+# aplicamos el filtrado EN LOCAL sobre la precarga completa ya cargada.
+# No dependemos del snapshot CPV porque puede venir vacío o desactualizado.
 if apply_airia_filters and st.session_state.raw_df is not None and st.session_state.airia_df is None:
-    with st.spinner("Aplicando filtros Airia sobre la precarga completa…"):
-        st.session_state.airia_df = _build_airia_filtered_df(st.session_state.raw_df)
-        st.session_state.airia_tenders_count = len(st.session_state.airia_df)
+    with st.spinner("Aplicando filtros Airia…"):
+        raw_for_airia = st.session_state.raw_df.copy()
+        airia_mask = raw_for_airia.apply(_row_matches_airia_focus, axis=1)
+        airia_df = raw_for_airia[airia_mask].copy().reset_index(drop=True)
+        st.session_state.airia_df = airia_df
+        st.session_state.airia_tenders_count = len(airia_df)
 
 if apply_airia_filters:
     st.session_state.df = st.session_state.airia_df if st.session_state.airia_df is not None else pd.DataFrame()
