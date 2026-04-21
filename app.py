@@ -574,17 +574,18 @@ if run:
             pass
         st.error(st.session_state.msg_err)
 
-# si el usuario activa filtros Airia después de cargar las licitaciones completas,
-# intentamos aplicar primero una precarga externa filtrada y, si no existe, usamos búsqueda viva filtrada.
+# Si el usuario activa filtros Airia después de cargar las licitaciones completas,
+# SOLO usamos la precarga externa filtrada para que el cambio sea inmediato.
+# No lanzamos búsqueda viva aquí porque rompería el objetivo de inmediatez.
 if apply_airia_filters and st.session_state.raw_df is not None and st.session_state.airia_df is None:
     filtered_loaded = False
     snapshot_filtered_error = None
 
-    if not bypass_cache and REMOTE_SNAPSHOT_URL_CPV:
+    if REMOTE_SNAPSHOT_URL_CPV:
         try:
             with st.spinner("Aplicando filtros Airia desde precarga externa…"):
                 snap_filtered = _load_remote_snapshot(REMOTE_SNAPSHOT_URL_CPV)
-            if snap_filtered and _snapshot_is_fresh(snap_filtered, REMOTE_SNAPSHOT_MAX_AGE_MIN):
+            if snap_filtered:
                 df_filtered_remote = _snapshot_to_df(snap_filtered)
                 if not df_filtered_remote.empty:
                     st.session_state.airia_df = df_filtered_remote.copy()
@@ -594,18 +595,10 @@ if apply_airia_filters and st.session_state.raw_df is not None and st.session_st
             snapshot_filtered_error = str(e)
 
     if not filtered_loaded:
-        try:
-            with st.spinner("Aplicando filtros Airia…"):
-                tenders_airia = live_fetch_tenders(company_corpus=company_corpus, progress_cb=None, apply_airia_filters=True)
-                df_airia = score_tenders(tenders_airia, company_corpus, top_k=None)
-            st.session_state.airia_df = df_airia
-            st.session_state.airia_tenders_count = len(tenders_airia)
-            filtered_loaded = True
-            if snapshot_filtered_error:
-                st.info(f"No se pudo usar la precarga filtrada y se aplicaron los filtros Airia en vivo: {snapshot_filtered_error}")
-        except Exception as e:
-            st.session_state.msg_err = f"Error al aplicar filtros Airia: {e}"
-            st.error(st.session_state.msg_err)
+        if snapshot_filtered_error:
+            st.warning(f"No se pudo cargar la precarga externa de filtros Airia: {snapshot_filtered_error}")
+        else:
+            st.warning("No hay precarga externa de filtros Airia disponible. Configura REMOTE_SNAPSHOT_URL_CPV para que el filtrado sea instantáneo.")
 
 if apply_airia_filters:
     st.session_state.df = st.session_state.airia_df if st.session_state.airia_df is not None else None
