@@ -812,12 +812,27 @@ if amount_min_value is not None:
     filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1) >= amount_min_value]
 if amount_max_value is not None:
     filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1) <= amount_max_value]
-if selected_platform_labels:
-    filtered_df = filtered_df[filtered_df["__platform_label"].isin(selected_platform_labels)]
-else:
-    filtered_df = filtered_df.iloc[0:0]
+all_platform_labels = [label for label, _domain in platform_options]
+all_platforms_selected = (
+    len(selected_platform_labels) == len(all_platform_labels)
+    and set(selected_platform_labels) == set(all_platform_labels)
+) if all_platform_labels else True
+
+all_keywords_selected = (
+    len(selected_keywords) == len(keyword_options)
+    and {k.lower() for k in selected_keywords} == {k.lower() for k in keyword_options}
+) if keyword_options else True
+
+if all_platform_labels:
+    if not selected_platform_labels:
+        filtered_df = filtered_df.iloc[0:0]
+    elif not all_platforms_selected:
+        filtered_df = filtered_df[filtered_df["__platform_label"].isin(selected_platform_labels)]
+
 if keyword_options:
-    if selected_keywords:
+    if not selected_keywords:
+        filtered_df = filtered_df.iloc[0:0]
+    elif not all_keywords_selected:
         selected_keywords_norm = {k.lower() for k in selected_keywords}
         filtered_df = filtered_df[
             filtered_df.apply(
@@ -825,8 +840,6 @@ if keyword_options:
                 axis=1,
             )
         ]
-    else:
-        filtered_df = filtered_df.iloc[0:0]
 
 filtered_df = filtered_df.drop(columns=["__amount_num", "__domain", "__platform_label"], errors="ignore").reset_index(drop=True)
 st.session_state.filtered_count = len(filtered_df)
