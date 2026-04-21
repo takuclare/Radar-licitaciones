@@ -591,33 +591,45 @@ if run:
         st.error(st.session_state.msg_err)
 
 # Si el usuario activa filtros Airia después de cargar las licitaciones completas,
-# SOLO usamos la precarga externa filtrada para que el cambio sea inmediato.
-# No lanzamos búsqueda viva aquí porque rompería el objetivo de inmediatez.
+# aplicamos el filtrado INSTANTÁNEO sobre la precarga completa ya cargada.
+# No dependemos de REMOTE_SNAPSHOT_URL_CPV porque ese snapshot puede venir vacío o desactualizado.
+def _build_airia_filtered_df(raw_df: pd.DataFrame) -> pd.DataFrame:
+    if raw_df is None or raw_df.empty:
+        return pd.DataFrame()
+
+    df_airia = raw_df.copy()
+
+    def _is_airia_row(row) -> bool:
+        # Coincidencia por foco Airia (CPV/keywords/título/resumen)
+        if _row_matches_airia_focus(row):
+            return True
+
+        # Compatibilidad adicional por columnas de scoring ya presentes en el snapshot
+        for col in ("priority_cpvs", "super_keywords", "boost_keywords"):
+            val = str(row.get(col, "") or "").strip()
+            if val:
+                return True
+
+        return False
+
+    mask_airia = df_airia.apply(_is_airia_row, axis=1)
+    df_airia = df_airia[mask_airia].copy()
+
+    # Excluimos filas bloqueadas por palabras no deseadas cuando el snapshot ya trae esa información
+    if "bloqueada" in df_airia.columns:
+        df_airia = df_airia[~df_airia["bloqueada"].fillna(False)]
+    elif "blocked_hits" in df_airia.columns:
+        df_airia = df_airia[df_airia["blocked_hits"].fillna("").astype(str).str.strip() == ""]
+
+    return df_airia.reset_index(drop=True)
+
 if apply_airia_filters and st.session_state.raw_df is not None and st.session_state.airia_df is None:
-    filtered_loaded = False
-    snapshot_filtered_error = None
-
-    if REMOTE_SNAPSHOT_URL_CPV:
-        try:
-            with st.spinner("Aplicando filtros Airia desde precarga externa…"):
-                snap_filtered = _load_remote_snapshot(REMOTE_SNAPSHOT_URL_CPV)
-            if snap_filtered:
-                df_filtered_remote = _snapshot_to_df(snap_filtered)
-                if not df_filtered_remote.empty:
-                    st.session_state.airia_df = df_filtered_remote.copy()
-                    st.session_state.airia_tenders_count = int(snap_filtered.get("detected_count", len(df_filtered_remote)) or len(df_filtered_remote))
-                    filtered_loaded = True
-        except Exception as e:
-            snapshot_filtered_error = str(e)
-
-    if not filtered_loaded:
-        if snapshot_filtered_error:
-            st.warning(f"No se pudo cargar la precarga externa de filtros Airia: {snapshot_filtered_error}")
-        else:
-            st.warning("No se ha podido leer la precarga externa de filtros Airia. Revisa REMOTE_SNAPSHOT_URL_CPV en Secrets/variables del despliegue.")
+    with st.spinner("Aplicando filtros Airia sobre la precarga completa…"):
+        st.session_state.airia_df = _build_airia_filtered_df(st.session_state.raw_df)
+        st.session_state.airia_tenders_count = len(st.session_state.airia_df)
 
 if apply_airia_filters:
-    st.session_state.df = st.session_state.airia_df if st.session_state.airia_df is not None else None
+    st.session_state.df = st.session_state.airia_df if st.session_state.airia_df is not None else pd.DataFrame()
     st.session_state.tenders_count = st.session_state.airia_tenders_count
 else:
     st.session_state.df = st.session_state.raw_df if st.session_state.raw_df is not None else None
