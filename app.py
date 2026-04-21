@@ -812,20 +812,29 @@ if amount_min_value is not None:
     filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1) >= amount_min_value]
 if amount_max_value is not None:
     filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1) <= amount_max_value]
-if selected_platform_labels:
-    filtered_df = filtered_df[filtered_df["__platform_label"].isin(selected_platform_labels)]
-else:
-    filtered_df = filtered_df.iloc[0:0]
+# Importante:
+# - Si están seleccionadas TODAS las plataformas, NO filtramos.
+# - Si están seleccionadas TODAS las palabras clave detectadas, NO filtramos.
+#   Antes se estaba filtrando igualmente y eso dejaba fuera todas las licitaciones
+#   que no tenían keywords detectadas, aunque el usuario no quisiera aplicar ese recorte.
+if platform_options:
+    all_platform_labels = [label for label, _domain in platform_options]
+    if selected_platform_labels and set(selected_platform_labels) != set(all_platform_labels):
+        filtered_df = filtered_df[filtered_df["__platform_label"].isin(selected_platform_labels)]
+    elif not selected_platform_labels:
+        filtered_df = filtered_df.iloc[0:0]
+
 if keyword_options:
-    if selected_keywords:
-        selected_keywords_norm = {k.lower() for k in selected_keywords}
+    all_keywords_norm = {k.lower() for k in keyword_options}
+    selected_keywords_norm = {k.lower() for k in selected_keywords}
+    if selected_keywords and selected_keywords_norm != all_keywords_norm:
         filtered_df = filtered_df[
             filtered_df.apply(
                 lambda r: any(k.lower() in selected_keywords_norm for k in _extract_detected_keywords(r)),
                 axis=1,
             )
         ]
-    else:
+    elif not selected_keywords:
         filtered_df = filtered_df.iloc[0:0]
 
 filtered_df = filtered_df.drop(columns=["__amount_num", "__domain", "__platform_label"], errors="ignore").reset_index(drop=True)
