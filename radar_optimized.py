@@ -799,6 +799,7 @@ def fetch_tenders(
     progress_cb: Optional[Callable] = None,
     pre_rank_corpus: Optional[List[str]] = None,
     deep_review_top_n: int = 30,
+    apply_airia_filters: bool = True,
 ) -> List[Tender]:
     """
     Optimizado: mantiene la lógica de filtros/extracción y además expone progreso real y continuo.
@@ -818,7 +819,7 @@ def fetch_tenders(
             pass
 
     now = datetime.utcnow()
-    min_date = now - timedelta(days=only_last_days)
+    min_date = now - timedelta(days=only_last_days) if apply_airia_filters else None
 
     # 1) Parse feeds y prefiltrar por fecha del feed
     candidates: List[Tuple[str, str, str, str, str, Optional[datetime], Optional[datetime], Optional[datetime], str]] = []
@@ -883,12 +884,12 @@ def fetch_tenders(
             if not link:
                 continue
 
-            if _is_catalunya_tender(link) and not _atom_status_is_en_plazo(summary):
+            if apply_airia_filters and _is_catalunya_tender(link) and not _atom_status_is_en_plazo(summary):
                 continue
 
             is_madrid = (feed_url == _FEED_1044) and _is_madrid_tender(link)
             issue_d = issue_date_map.get(_normalize_madrid_link_key(link)) if is_madrid else None
-            if is_madrid:
+            if apply_airia_filters and is_madrid:
                 # Para Madrid, el filtrado SIEMPRE debe basarse en cbc:IssueDate del ATOM.
                 # Si no podemos resolverlo, preferimos excluir la entrada antes que colarla con una fecha errónea.
                 if not issue_d:
@@ -899,7 +900,7 @@ def fetch_tenders(
 
             is_andalucia = (feed_url == _FEED_1044) and _is_andalucia_tender(link)
             andalucia_end_d = andalucia_end_date_map.get(_normalize_andalucia_link_key(link)) if is_andalucia else None
-            if is_andalucia and andalucia_end_d:
+            if apply_airia_filters and is_andalucia and andalucia_end_d:
                 andalucia_end_dt = datetime(andalucia_end_d.year, andalucia_end_d.month, andalucia_end_d.day)
                 if andalucia_end_dt < (now + timedelta(days=exclude_deadline_soon_days)):
                     continue
@@ -915,11 +916,11 @@ def fetch_tenders(
 
             feed_updated_dt = _to_naive_utc(_parse_atom_date(updated_raw))
 
-            if feed_published_dt and feed_published_dt < min_date:
+            if apply_airia_filters and feed_published_dt and min_date and feed_published_dt < min_date:
                 continue
 
             deadline_dt = _to_naive_utc(_extract_deadline_from_text(summary))
-            if is_andalucia and andalucia_end_d:
+            if apply_airia_filters and is_andalucia and andalucia_end_d:
                 deadline_dt = datetime(andalucia_end_d.year, andalucia_end_d.month, andalucia_end_d.day)
             atom_importe = _extract_importe_from_atom_summary(summary)
 
@@ -969,10 +970,12 @@ def fetch_tenders(
             cache_hits += 1
             cached_review_links.add(link)
 
-    # Importante: todos los expedientes CSP deben pasar revisión profunda.
-    # Si no, algunos expedientes antiguos pueden colarse por el updated reciente
-    # del feed aunque su anuncio de licitación/pliegos sea antiguo.
-    review_links = list(cached_review_links | top_review_links | csp_review_links)
+    # Con filtros Airia activados, todos los expedientes CSP deben pasar revisión profunda.
+    # Si los filtros están desactivados, devolvemos todo lo leído del feed sin excluir por reglas internas.
+    if apply_airia_filters:
+        review_links = list(cached_review_links | top_review_links | csp_review_links)
+    else:
+        review_links = []
     review_total = len(review_links)
     portal_map: Dict[str, Tuple[Optional[datetime], Optional[datetime], Optional[str]]] = {}
     workers = max(2, min(int(max_workers or 12), 20))
@@ -1013,18 +1016,18 @@ def fetch_tenders(
 
         include = True
         is_csp = _is_csp_host(link)
-        if is_csp:
+        if apply_airia_filters and is_csp:
             verdict = _csp_status_is_publicada(portal_status) if reviewed_deep else None
             if verdict is False:
                 include = False
             elif verdict is None and _csp_failsafe_exclude_by_text(title, summary):
                 include = False
 
-        if include and published_dt and published_dt < min_date:
+        if apply_airia_filters and include and published_dt and min_date and published_dt < min_date:
             include = False
-        if include and deadline_dt and deadline_dt < now:
+        if apply_airia_filters and include and deadline_dt and deadline_dt < now:
             include = False
-        if include and deadline_dt and exclude_deadline_soon_days is not None:
+        if apply_airia_filters and include and deadline_dt and exclude_deadline_soon_days is not None:
             if deadline_dt < (now + timedelta(days=exclude_deadline_soon_days)):
                 include = False
 

@@ -6,6 +6,7 @@ import io
 import json
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+from html import escape
 
 import pandas as pd
 import requests
@@ -43,7 +44,7 @@ def cached_company_corpus(excel_path: str):
 MAX_LIMIT_FEED = 3000
 MAX_FEED_PAGES = 15
 
-def live_fetch_tenders(company_corpus=None, progress_cb=None):
+def live_fetch_tenders(company_corpus=None, progress_cb=None, apply_airia_filters: bool = False):
     return fetch_tenders(
         limit_per_feed=MAX_LIMIT_FEED,
         max_feed_pages=MAX_FEED_PAGES,
@@ -53,6 +54,7 @@ def live_fetch_tenders(company_corpus=None, progress_cb=None):
         progress_cb=progress_cb,
         pre_rank_corpus=company_corpus,
         deep_review_top_n=30,
+        apply_airia_filters=apply_airia_filters,
     )
 
 # ==============================
@@ -395,6 +397,11 @@ with st.sidebar:
         value=False,
         help="Si la marcas, no se usará la precarga de GitHub y se lanzará una búsqueda completa en vivo. Puede tardar hasta unos 20 minutos.",
     )
+    apply_airia_filters = st.checkbox(
+        "Aplicar filtros Airia",
+        value=False,
+        help="Si la activas, se aplican los filtros internos actuales del código: fechas, estados, plazos y revisión Airia. Si no la activas, se muestran todas las licitaciones leídas del feed y luego puedes filtrarlas manualmente.",
+    )
 
     run = st.button("🔄 Buscar licitaciones", use_container_width=True)
     search_progress_ph = st.empty()
@@ -431,6 +438,8 @@ with st.spinner("Leyendo vuestro histórico (Excel)…"):
     company_corpus = cached_company_corpus(DATA_EXCEL)
 st.session_state.company_corpus_len = len(company_corpus)
 
+st.caption(f"Modo actual: {'filtros Airia activados' if apply_airia_filters else 'mostrando todas las licitaciones del feed'}")
+
 # ==============================
 # Buscar licitaciones (optimizado)
 # ==============================
@@ -450,7 +459,7 @@ if run:
             <div class='muted' style='margin-top:8px; line-height:1.7;'>
               <b>Proceso:</b> {stage or 'Preparando'}<br>
               <b>Licitaciones revisadas:</b> {reviewed_txt}/{total_txt}<br>
-              <b>Licitaciones válidas detectadas:</b> {detected}<br>
+              <b>Licitaciones detectadas:</b> {detected}<br>
               <b>Entradas ATOM leídas:</b> {feed_count}<br>
               <b>Consultas resueltas desde caché interna:</b> {cache_hits}
             </div>
@@ -465,7 +474,7 @@ if run:
         used_remote_snapshot = False
         remote_error = None
 
-        if not bypass_cache:
+        if apply_airia_filters and not bypass_cache:
             selected_snapshot_url = REMOTE_SNAPSHOT_URL_ALL
             if selected_snapshot_url:
                 try:
@@ -526,7 +535,7 @@ if run:
                         cache_hits=int(meta.get('cache_hits', 0) or 0),
                     )
 
-                tenders = live_fetch_tenders(company_corpus=company_corpus, progress_cb=_cb)
+                tenders = live_fetch_tenders(company_corpus=company_corpus, progress_cb=_cb, apply_airia_filters=apply_airia_filters)
 
             st.session_state.tenders_count = len(tenders)
 
@@ -538,7 +547,8 @@ if run:
 
             st.session_state.df = df
             p.progress(1.0, text="Ranking generado ✅")
-            st.session_state.msg_ok = f"Ranking generado ✅ (mostrando {len(df)} de {st.session_state.tenders_count})"
+            modo_txt = "con filtros Airia" if apply_airia_filters else "sin filtros Airia"
+            st.session_state.msg_ok = f"Búsqueda generada ✅ ({modo_txt}, mostrando {len(df)} de {st.session_state.tenders_count})"
             if remote_error:
                 st.info(f"No se pudo usar la precarga externa y se hizo búsqueda normal: {remote_error}")
             st.success(st.session_state.msg_ok)
@@ -877,7 +887,7 @@ def _tender_modal(tender_id: str, row_dict: dict):
     estimated_value = row_dict.get("estimated_value", "") or ""
     contract_value_no_vat = row_dict.get("contract_value_no_vat", "") or ""
 
-    st.markdown(f"<div class='modal-title'>{title}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='modal-title'>{escape(str(title))}</div>", unsafe_allow_html=True)
 
     pills = []
     if pub:
@@ -894,7 +904,7 @@ def _tender_modal(tender_id: str, row_dict: dict):
         st.markdown("<div class='meta'>" + "".join(pills) + "</div>", unsafe_allow_html=True)
 
     if link:
-        st.markdown(f"**Enlace oficial:** {link}")
+        st.markdown(f"**Enlace oficial:** {escape(str(link))}")
 
     status_box = st.empty()
     if st.session_state.get(status_key):
@@ -1052,53 +1062,84 @@ def _tender_modal(tender_id: str, row_dict: dict):
     st.markdown("</div>", unsafe_allow_html=True)
 
 # Feed de licitaciones
-st.markdown("<div class='tender-list'>", unsafe_allow_html=True)
+PAGE_SIZE = 25
+page_count = max(1, (len(filtered_df) + PAGE_SIZE - 1) // PAGE_SIZE)
+if "results_page" not in st.session_state:
+    st.session_state.results_page = 1
+if st.session_state.results_page > page_count:
+    st.session_state.results_page = page_count
+if st.session_state.results_page < 1:
+    st.session_state.results_page = 1
 
 if filtered_df.empty:
     st.info("No hay licitaciones que cumplan los filtros actuales.")
-
-
-for i, row in filtered_df.iterrows():
-    tender_id = _tender_id_from_row(row)
-    row_dict = _tender_map.get(tender_id, row.to_dict())
-
-    title = (row_dict.get("title", "") or "").strip()
-    link = (row_dict.get("link", "") or "").strip()
-    pub = (row_dict.get("publicacion", "") or row_dict.get("published", "") or "").strip()
-    deadline = (row_dict.get("fecha_limite", "") or row_dict.get("deadline", "") or row_dict.get("plazo", "") or "").strip()
-    boost_kw = (row_dict.get("boost_keywords", "") or "").strip()
-    estimated_value = (row_dict.get("estimated_value", "") or "").strip()
-    contract_value_no_vat = (row_dict.get("contract_value_no_vat", "") or "").strip()
-
-    outer_left, outer_right = st.columns([0.84, 0.16], vertical_alignment="center")
-    with outer_left:
-        badges = []
-        if pub:
-            badges.append(f"<span class='tender-badge'>Publicado: {pub}</span>")
-        if deadline:
-            badges.append(f"<span class='tender-badge'>Plazo: {deadline}</span>")
-        if estimated_value:
-            badges.append(f"<span class='tender-badge money'>Valor estimado: {estimated_value}</span>")
-        if contract_value_no_vat:
-            badges.append(f"<span class='tender-badge money'>Importe sin IVA: {contract_value_no_vat}</span>")
-        if boost_kw:
-            badges.append(f"<span class='tender-badge'>Keywords: {boost_kw}</span>")
-
-        html = (
-            "<div class='tender-shell'><div class='tender-box'>"
-            f"<div class='tender-title-html'>{title}</div>"
-            + (f"<div class='tender-link-html'>{link}</div>" if link else "")
-            + (f"<div class='tender-badges'>{''.join(badges)}</div>" if badges else "")
-            + "</div></div>"
+else:
+    pag_left, pag_mid, pag_right = st.columns([0.25, 0.50, 0.25])
+    with pag_left:
+        if st.button("← Anterior", disabled=st.session_state.results_page <= 1, use_container_width=True):
+            st.session_state.results_page = max(1, st.session_state.results_page - 1)
+            st.rerun()
+    with pag_mid:
+        selected_page = st.selectbox(
+            "Página",
+            options=list(range(1, page_count + 1)),
+            index=max(0, st.session_state.results_page - 1),
+            key="results_page_selector",
         )
-        st.markdown(html, unsafe_allow_html=True)
-    with outer_right:
-        st.markdown("<div class='tender-open-wrap'>", unsafe_allow_html=True)
-        if st.button("Abrir", key=f"open_btn_{tender_id}", use_container_width=True):
-            _open_tender_modal(tender_id)
-        st.markdown("</div>", unsafe_allow_html=True)
+        if selected_page != st.session_state.results_page:
+            st.session_state.results_page = selected_page
+            st.rerun()
+    with pag_right:
+        if st.button("Siguiente →", disabled=st.session_state.results_page >= page_count, use_container_width=True):
+            st.session_state.results_page = min(page_count, st.session_state.results_page + 1)
+            st.rerun()
 
-st.markdown("</div>", unsafe_allow_html=True)
+    page_start = (st.session_state.results_page - 1) * PAGE_SIZE
+    page_end = page_start + PAGE_SIZE
+    page_df = filtered_df.iloc[page_start:page_end].reset_index(drop=True)
+    st.caption(f"Página {st.session_state.results_page} de {page_count} · mostrando licitaciones {page_start + 1} a {min(page_end, len(filtered_df))} de {len(filtered_df)}")
+
+    st.markdown("<div class='tender-list'>", unsafe_allow_html=True)
+    for i, row in page_df.iterrows():
+        tender_id = _tender_id_from_row(row)
+        row_dict = _tender_map.get(tender_id, row.to_dict())
+    
+        title = (row_dict.get("title", "") or "").strip()
+        link = (row_dict.get("link", "") or "").strip()
+        pub = (row_dict.get("publicacion", "") or row_dict.get("published", "") or "").strip()
+        deadline = (row_dict.get("fecha_limite", "") or row_dict.get("deadline", "") or row_dict.get("plazo", "") or "").strip()
+        boost_kw = (row_dict.get("boost_keywords", "") or "").strip()
+        estimated_value = (row_dict.get("estimated_value", "") or "").strip()
+        contract_value_no_vat = (row_dict.get("contract_value_no_vat", "") or "").strip()
+    
+        outer_left, outer_right = st.columns([0.84, 0.16], vertical_alignment="center")
+        with outer_left:
+            badges = []
+            if pub:
+                badges.append(f"<span class='tender-badge'>Publicado: {escape(str(pub))}</span>")
+            if deadline:
+                badges.append(f"<span class='tender-badge'>Plazo: {escape(str(deadline))}</span>")
+            if estimated_value:
+                badges.append(f"<span class='tender-badge money'>Valor estimado: {escape(str(estimated_value))}</span>")
+            if contract_value_no_vat:
+                badges.append(f"<span class='tender-badge money'>Importe sin IVA: {escape(str(contract_value_no_vat))}</span>")
+            if boost_kw:
+                badges.append(f"<span class='tender-badge'>Keywords: {escape(str(boost_kw))}</span>")
+    
+            html = (
+                "<div class='tender-shell'><div class='tender-box'>"
+                f"<div class='tender-title-html'>{escape(str(title))}</div>"
+                + (f"<div class='tender-link-html'>{escape(str(link))}</div>" if link else "")
+                + (f"<div class='tender-badges'>{''.join(badges)}</div>" if badges else "")
+                + "</div></div>"
+            )
+            st.markdown(html, unsafe_allow_html=True)
+        with outer_right:
+            st.markdown("<div class='tender-open-wrap'>", unsafe_allow_html=True)
+            if st.button("Abrir", key=f"open_btn_{tender_id}", use_container_width=True):
+                _open_tender_modal(tender_id)
+            st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # Abrir modal si hay uno seleccionado
 
