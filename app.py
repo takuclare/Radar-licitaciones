@@ -590,6 +590,26 @@ if run:
             pass
         st.error(st.session_state.msg_err)
 
+
+def _row_matches_airia_focus(row) -> bool:
+    text_parts = [
+        str(row.get("priority_cpvs", "") or ""),
+        str(row.get("boost_keywords", "") or ""),
+        str(row.get("super_keywords", "") or ""),
+        str(row.get("title", "") or ""),
+        str(row.get("summary", "") or ""),
+    ]
+    joined = " ".join(text_parts).lower()
+    needles = [
+        "71000000", "71200000", "71221000", "71222000", "71240000", "71242000",
+        "71247000", "71300000", "71317200",
+        "redaccion de proyecto", "dirección de obra", "direccion de obra",
+        "dirección de ejecución", "direccion de ejecucion",
+        "coordinación de seguridad", "coordinacion de seguridad",
+        "atdocv", "asistencia tecnica", "css", "df", "at"
+    ]
+    return any(n in joined for n in needles)
+
 # Si el usuario activa filtros Airia después de cargar las licitaciones completas,
 # aplicamos el filtrado EN LOCAL sobre la precarga completa ya cargada.
 # No dependemos del snapshot CPV porque puede venir vacío o desactualizado.
@@ -664,25 +684,6 @@ def _platform_label(domain: str) -> str:
     if not clean:
         return 'Otra plataforma'
     return clean
-
-def _row_matches_airia_focus(row) -> bool:
-    text_parts = [
-        str(row.get("priority_cpvs", "") or ""),
-        str(row.get("boost_keywords", "") or ""),
-        str(row.get("super_keywords", "") or ""),
-        str(row.get("title", "") or ""),
-        str(row.get("summary", "") or ""),
-    ]
-    joined = " ".join(text_parts).lower()
-    needles = [
-        "71000000", "71200000", "71221000", "71222000", "71240000", "71242000",
-        "71247000", "71300000", "71317200",
-        "redaccion de proyecto", "dirección de obra", "direccion de obra",
-        "dirección de ejecución", "direccion de ejecucion",
-        "coordinación de seguridad", "coordinacion de seguridad",
-        "atdocv", "asistencia tecnica", "css", "df", "at"
-    ]
-    return any(n in joined for n in needles)
 
 df = df.copy()
 df["__amount_num"] = df.get("contract_value_no_vat", pd.Series(index=df.index)).apply(_parse_amount_eur)
