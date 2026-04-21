@@ -6,6 +6,7 @@ import io
 import json
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+from html import escape
 
 import pandas as pd
 import requests
@@ -43,7 +44,7 @@ def cached_company_corpus(excel_path: str):
 MAX_LIMIT_FEED = 3000
 MAX_FEED_PAGES = 15
 
-def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool = False):
+def live_fetch_tenders(company_corpus=None, progress_cb=None, apply_airia_filters: bool = False):
     return fetch_tenders(
         limit_per_feed=MAX_LIMIT_FEED,
         max_feed_pages=MAX_FEED_PAGES,
@@ -53,7 +54,7 @@ def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool
         progress_cb=progress_cb,
         pre_rank_corpus=company_corpus,
         deep_review_top_n=30,
-        bypass_cache=bypass_cache,
+        apply_airia_filters=apply_airia_filters,
     )
 
 # ==============================
@@ -380,6 +381,16 @@ if "msg_err" not in st.session_state:
     st.session_state.msg_err = ""
 if "company_corpus_len" not in st.session_state:
     st.session_state.company_corpus_len = 0
+if "raw_df" not in st.session_state:
+    st.session_state.raw_df = None
+if "raw_tenders_count" not in st.session_state:
+    st.session_state.raw_tenders_count = 0
+if "airia_df" not in st.session_state:
+    st.session_state.airia_df = None
+if "airia_tenders_count" not in st.session_state:
+    st.session_state.airia_tenders_count = 0
+if "data_source_mode" not in st.session_state:
+    st.session_state.data_source_mode = ""
 
 # ==============================
 # Sidebar: logo arriba + búsqueda/filtros
@@ -395,6 +406,11 @@ with st.sidebar:
         "Buscar sin caché",
         value=False,
         help="Si la marcas, no se usará la precarga de GitHub y se lanzará una búsqueda completa en vivo. Puede tardar hasta unos 20 minutos.",
+    )
+    apply_airia_filters = st.checkbox(
+        "Aplicar filtros Airia",
+        value=False,
+        help="Si la activas, se aplican los filtros internos actuales del código: fechas, estados, plazos y revisión Airia. Si no la activas, se muestran todas las licitaciones leídas del feed y luego puedes filtrarlas manualmente.",
     )
 
     run = st.button("🔄 Buscar licitaciones", use_container_width=True)
@@ -432,31 +448,7 @@ with st.spinner("Leyendo vuestro histórico (Excel)…"):
     company_corpus = cached_company_corpus(DATA_EXCEL)
 st.session_state.company_corpus_len = len(company_corpus)
 
-# ==============================
-# KPI row (siempre)
-# ==============================
-kpi_hist = st.session_state.company_corpus_len
-kpi_found = st.session_state.tenders_count
-kpi_filtered = len(st.session_state.df) if isinstance(st.session_state.df, pd.DataFrame) else 0
-st.markdown(
-    f"""
-    <div class="kpi-row">
-      <div class="kpi">
-        <p class="kpi-label">Histórico</p>
-        <p class="kpi-value">{kpi_hist}</p>
-      </div>
-      <div class="kpi">
-        <p class="kpi-label">Licitaciones detectadas</p>
-        <p class="kpi-value">{kpi_found}</p>
-      </div>
-      <div class="kpi">
-        <p class="kpi-label">Mostradas</p>
-        <p class="kpi-value">{kpi_filtered}</p>
-      </div>
-    </div>
-    """,
-    unsafe_allow_html=True
-)
+st.caption(f"Modo actual: {'filtros Airia activados' if apply_airia_filters else 'mostrando todas las licitaciones del feed'}")
 
 # ==============================
 # Buscar licitaciones (optimizado)
@@ -477,7 +469,7 @@ if run:
             <div class='muted' style='margin-top:8px; line-height:1.7;'>
               <b>Proceso:</b> {stage or 'Preparando'}<br>
               <b>Licitaciones revisadas:</b> {reviewed_txt}/{total_txt}<br>
-              <b>Licitaciones válidas detectadas:</b> {detected}<br>
+              <b>Licitaciones detectadas:</b> {detected}<br>
               <b>Entradas ATOM leídas:</b> {feed_count}<br>
               <b>Consultas resueltas desde caché interna:</b> {cache_hits}
             </div>
@@ -489,41 +481,40 @@ if run:
         progress_title_ph.markdown("<div class='section-title' style='margin-top:8px;'>Progreso de búsqueda</div>", unsafe_allow_html=True)
         _render_meta()
 
-        used_remote_snapshot = False
         remote_error = None
+        raw_loaded = False
 
-        if not bypass_cache:
-            selected_snapshot_url = REMOTE_SNAPSHOT_URL_ALL
-            if selected_snapshot_url:
-                try:
-                    p.progress(0.20, text="Consultando precarga externa…")
-                    snapshot = _load_remote_snapshot(selected_snapshot_url)
-                    if snapshot and _snapshot_is_fresh(snapshot, REMOTE_SNAPSHOT_MAX_AGE_MIN):
-                        df_remote = _snapshot_to_df(snapshot)
-                        if not df_remote.empty:
-                            total_detected = int(snapshot.get("detected_count", len(df_remote)) or len(df_remote))
-                            generated_age = _snapshot_generated_minutes_ago(snapshot)
-                            shown_df = df_remote.copy()
-                            st.session_state.tenders_count = total_detected
-                            st.session_state.df = shown_df
-                            used_remote_snapshot = True
-                            p.progress(1.0, text="Resultados cargados desde precarga externa ✅")
-                            _render_meta(
-                                stage="Precarga externa",
-                                reviewed=total_detected,
-                                total=total_detected,
-                                detected=total_detected,
-                                feed_count=int(snapshot.get("feed_entries", 0) or 0),
-                                cache_hits=total_detected,
-                            )
-                            age_txt = f"hace {generated_age:.1f} min" if generated_age is not None else "reciente"
-                            st.session_state.msg_ok = f"Ranking cargado desde precarga externa ✅ (mostrando {len(shown_df)} de {total_detected}, generado {age_txt})"
-                            st.success(st.session_state.msg_ok)
-                except Exception as e:
-                    remote_error = str(e)
+        if not bypass_cache and REMOTE_SNAPSHOT_URL_ALL:
+            try:
+                p.progress(0.20, text="Consultando precarga externa completa…")
+                snapshot = _load_remote_snapshot(REMOTE_SNAPSHOT_URL_ALL)
+                if snapshot and _snapshot_is_fresh(snapshot, REMOTE_SNAPSHOT_MAX_AGE_MIN):
+                    df_remote = _snapshot_to_df(snapshot)
+                    if not df_remote.empty:
+                        total_detected = int(snapshot.get("detected_count", len(df_remote)) or len(df_remote))
+                        generated_age = _snapshot_generated_minutes_ago(snapshot)
+                        st.session_state.raw_df = df_remote.copy()
+                        st.session_state.raw_tenders_count = total_detected
+                        st.session_state.data_source_mode = "snapshot_all"
+                        raw_loaded = True
+                        p.progress(0.78, text="Precarga externa completa cargada ✅")
+                        _render_meta(
+                            stage="Precarga externa completa",
+                            reviewed=total_detected,
+                            total=total_detected,
+                            detected=total_detected,
+                            feed_count=int(snapshot.get("feed_entries", 0) or 0),
+                            cache_hits=total_detected,
+                        )
+                        age_txt = f"hace {generated_age:.1f} min" if generated_age is not None else "reciente"
+                        st.session_state.msg_ok = f"Licitaciones completas cargadas desde precarga externa ✅ ({len(df_remote)} filas, generado {age_txt})"
+                else:
+                    remote_error = "La precarga externa completa no estaba disponible o no era reciente."
+            except Exception as e:
+                remote_error = str(e)
 
-        if not used_remote_snapshot:
-            with st.spinner("Buscando licitaciones…"):
+        if not raw_loaded:
+            with st.spinner("Buscando todas las licitaciones…"):
                 def _cb(payload):
                     if isinstance(payload, tuple) and len(payload) == 2:
                         frac, msg = payload
@@ -547,23 +538,32 @@ if run:
                         cache_hits=int(meta.get('cache_hits', 0) or 0),
                     )
 
-                tenders = live_fetch_tenders(company_corpus=company_corpus, progress_cb=_cb, bypass_cache=True)
+                tenders_all = live_fetch_tenders(company_corpus=company_corpus, progress_cb=_cb, apply_airia_filters=False)
 
-            st.session_state.tenders_count = len(tenders)
+            p.progress(0.96, text="Calculando ranking completo…")
+            _render_meta(stage="Calculando ranking completo", reviewed=len(tenders_all), total=max(len(tenders_all), 1), detected=len(tenders_all), feed_count=0, cache_hits=0)
 
-            p.progress(0.96, text="Calculando ranking final…")
-            _render_meta(stage="Calculando ranking final", reviewed=len(tenders), total=max(len(tenders), 1), detected=len(tenders), feed_count=0, cache_hits=0)
+            with st.spinner("Calculando ranking completo…"):
+                raw_df = score_tenders(tenders_all, company_corpus, top_k=None)
 
-            with st.spinner("Calculando ranking…"):
-                df = score_tenders(tenders, company_corpus, top_k=None)
+            st.session_state.raw_df = raw_df
+            st.session_state.raw_tenders_count = len(tenders_all)
+            st.session_state.data_source_mode = "live_all"
 
-            st.session_state.df = df
-            p.progress(1.0, text="Ranking generado ✅")
-            st.session_state.msg_ok = f"Ranking generado ✅ (mostrando {len(df)} de {st.session_state.tenders_count})"
-            if remote_error:
-                st.info(f"No se pudo usar la precarga externa y se hizo búsqueda normal: {remote_error}")
+        # al pulsar buscar, invalidamos el filtrado Airia previo para recalcularlo contra el nuevo conjunto completo
+        st.session_state.airia_df = None
+        st.session_state.airia_tenders_count = 0
+
+        p.progress(1.0, text="Búsqueda completa preparada ✅")
+        if remote_error:
+            st.info(f"No se pudo usar la precarga externa completa y se hizo búsqueda normal: {remote_error}")
+        if st.session_state.msg_ok:
             st.success(st.session_state.msg_ok)
     except Exception as e:
+        st.session_state.raw_df = None
+        st.session_state.raw_tenders_count = 0
+        st.session_state.airia_df = None
+        st.session_state.airia_tenders_count = 0
         st.session_state.df = None
         st.session_state.msg_err = f"Error al buscar licitaciones: {e}"
         try:
@@ -573,6 +573,46 @@ if run:
         except Exception:
             pass
         st.error(st.session_state.msg_err)
+
+# si el usuario activa filtros Airia después de cargar las licitaciones completas,
+# intentamos aplicar primero una precarga externa filtrada y, si no existe, usamos búsqueda viva filtrada.
+if apply_airia_filters and st.session_state.raw_df is not None and st.session_state.airia_df is None:
+    filtered_loaded = False
+    snapshot_filtered_error = None
+
+    if not bypass_cache and REMOTE_SNAPSHOT_URL_CPV:
+        try:
+            with st.spinner("Aplicando filtros Airia desde precarga externa…"):
+                snap_filtered = _load_remote_snapshot(REMOTE_SNAPSHOT_URL_CPV)
+            if snap_filtered and _snapshot_is_fresh(snap_filtered, REMOTE_SNAPSHOT_MAX_AGE_MIN):
+                df_filtered_remote = _snapshot_to_df(snap_filtered)
+                if not df_filtered_remote.empty:
+                    st.session_state.airia_df = df_filtered_remote.copy()
+                    st.session_state.airia_tenders_count = int(snap_filtered.get("detected_count", len(df_filtered_remote)) or len(df_filtered_remote))
+                    filtered_loaded = True
+        except Exception as e:
+            snapshot_filtered_error = str(e)
+
+    if not filtered_loaded:
+        try:
+            with st.spinner("Aplicando filtros Airia…"):
+                tenders_airia = live_fetch_tenders(company_corpus=company_corpus, progress_cb=None, apply_airia_filters=True)
+                df_airia = score_tenders(tenders_airia, company_corpus, top_k=None)
+            st.session_state.airia_df = df_airia
+            st.session_state.airia_tenders_count = len(tenders_airia)
+            filtered_loaded = True
+            if snapshot_filtered_error:
+                st.info(f"No se pudo usar la precarga filtrada y se aplicaron los filtros Airia en vivo: {snapshot_filtered_error}")
+        except Exception as e:
+            st.session_state.msg_err = f"Error al aplicar filtros Airia: {e}"
+            st.error(st.session_state.msg_err)
+
+if apply_airia_filters:
+    st.session_state.df = st.session_state.airia_df if st.session_state.airia_df is not None else None
+    st.session_state.tenders_count = st.session_state.airia_tenders_count
+else:
+    st.session_state.df = st.session_state.raw_df if st.session_state.raw_df is not None else None
+    st.session_state.tenders_count = st.session_state.raw_tenders_count
 
 df = st.session_state.df
 if df is None:
@@ -791,6 +831,34 @@ if keyword_options:
 filtered_df = filtered_df.drop(columns=["__amount_num", "__domain", "__platform_label"], errors="ignore").reset_index(drop=True)
 st.session_state.filtered_count = len(filtered_df)
 
+# ==============================
+# KPI row (siempre, ya sincronizada con la búsqueda y los filtros actuales)
+# ==============================
+kpi_hist = st.session_state.company_corpus_len
+kpi_found = st.session_state.tenders_count
+kpi_filtered = len(filtered_df)
+st.markdown(
+    f"""
+    <div class="kpi-row">
+      <div class="kpi">
+        <p class="kpi-label">Histórico</p>
+        <p class="kpi-value">{kpi_hist}</p>
+      </div>
+      <div class="kpi">
+        <p class="kpi-label">Licitaciones detectadas</p>
+        <p class="kpi-value">{kpi_found}</p>
+      </div>
+      <div class="kpi">
+        <p class="kpi-label">Mostradas</p>
+        <p class="kpi-value">{kpi_filtered}</p>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
+st.caption(f"Se están mostrando {kpi_filtered} licitaciones en pantalla de un total de {kpi_found} detectadas.")
+
 st.markdown("<div class='section-title'>Recomendadas</div>", unsafe_allow_html=True)
 
 # ==============================
@@ -870,7 +938,7 @@ def _tender_modal(tender_id: str, row_dict: dict):
     estimated_value = row_dict.get("estimated_value", "") or ""
     contract_value_no_vat = row_dict.get("contract_value_no_vat", "") or ""
 
-    st.markdown(f"<div class='modal-title'>{title}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='modal-title'>{escape(str(title))}</div>", unsafe_allow_html=True)
 
     pills = []
     if pub:
@@ -887,7 +955,7 @@ def _tender_modal(tender_id: str, row_dict: dict):
         st.markdown("<div class='meta'>" + "".join(pills) + "</div>", unsafe_allow_html=True)
 
     if link:
-        st.markdown(f"**Enlace oficial:** {link}")
+        st.markdown(f"**Enlace oficial:** {escape(str(link))}")
 
     status_box = st.empty()
     if st.session_state.get(status_key):
@@ -1045,53 +1113,84 @@ def _tender_modal(tender_id: str, row_dict: dict):
     st.markdown("</div>", unsafe_allow_html=True)
 
 # Feed de licitaciones
-st.markdown("<div class='tender-list'>", unsafe_allow_html=True)
+PAGE_SIZE = 25
+page_count = max(1, (len(filtered_df) + PAGE_SIZE - 1) // PAGE_SIZE)
+if "results_page" not in st.session_state:
+    st.session_state.results_page = 1
+if st.session_state.results_page > page_count:
+    st.session_state.results_page = page_count
+if st.session_state.results_page < 1:
+    st.session_state.results_page = 1
 
 if filtered_df.empty:
     st.info("No hay licitaciones que cumplan los filtros actuales.")
-
-
-for i, row in filtered_df.iterrows():
-    tender_id = _tender_id_from_row(row)
-    row_dict = _tender_map.get(tender_id, row.to_dict())
-
-    title = (row_dict.get("title", "") or "").strip()
-    link = (row_dict.get("link", "") or "").strip()
-    pub = (row_dict.get("publicacion", "") or row_dict.get("published", "") or "").strip()
-    deadline = (row_dict.get("fecha_limite", "") or row_dict.get("deadline", "") or row_dict.get("plazo", "") or "").strip()
-    boost_kw = (row_dict.get("boost_keywords", "") or "").strip()
-    estimated_value = (row_dict.get("estimated_value", "") or "").strip()
-    contract_value_no_vat = (row_dict.get("contract_value_no_vat", "") or "").strip()
-
-    outer_left, outer_right = st.columns([0.84, 0.16], vertical_alignment="center")
-    with outer_left:
-        badges = []
-        if pub:
-            badges.append(f"<span class='tender-badge'>Publicado: {pub}</span>")
-        if deadline:
-            badges.append(f"<span class='tender-badge'>Plazo: {deadline}</span>")
-        if estimated_value:
-            badges.append(f"<span class='tender-badge money'>Valor estimado: {estimated_value}</span>")
-        if contract_value_no_vat:
-            badges.append(f"<span class='tender-badge money'>Importe sin IVA: {contract_value_no_vat}</span>")
-        if boost_kw:
-            badges.append(f"<span class='tender-badge'>Keywords: {boost_kw}</span>")
-
-        html = (
-            "<div class='tender-shell'><div class='tender-box'>"
-            f"<div class='tender-title-html'>{title}</div>"
-            + (f"<div class='tender-link-html'>{link}</div>" if link else "")
-            + (f"<div class='tender-badges'>{''.join(badges)}</div>" if badges else "")
-            + "</div></div>"
+else:
+    pag_left, pag_mid, pag_right = st.columns([0.25, 0.50, 0.25])
+    with pag_left:
+        if st.button("← Anterior", disabled=st.session_state.results_page <= 1, use_container_width=True):
+            st.session_state.results_page = max(1, st.session_state.results_page - 1)
+            st.rerun()
+    with pag_mid:
+        selected_page = st.selectbox(
+            "Página",
+            options=list(range(1, page_count + 1)),
+            index=max(0, st.session_state.results_page - 1),
+            key="results_page_selector",
         )
-        st.markdown(html, unsafe_allow_html=True)
-    with outer_right:
-        st.markdown("<div class='tender-open-wrap'>", unsafe_allow_html=True)
-        if st.button("Abrir", key=f"open_btn_{tender_id}", use_container_width=True):
-            _open_tender_modal(tender_id)
-        st.markdown("</div>", unsafe_allow_html=True)
+        if selected_page != st.session_state.results_page:
+            st.session_state.results_page = selected_page
+            st.rerun()
+    with pag_right:
+        if st.button("Siguiente →", disabled=st.session_state.results_page >= page_count, use_container_width=True):
+            st.session_state.results_page = min(page_count, st.session_state.results_page + 1)
+            st.rerun()
 
-st.markdown("</div>", unsafe_allow_html=True)
+    page_start = (st.session_state.results_page - 1) * PAGE_SIZE
+    page_end = page_start + PAGE_SIZE
+    page_df = filtered_df.iloc[page_start:page_end].reset_index(drop=True)
+    st.caption(f"Página {st.session_state.results_page} de {page_count} · mostrando licitaciones {page_start + 1} a {min(page_end, len(filtered_df))} de {len(filtered_df)}")
+
+    st.markdown("<div class='tender-list'>", unsafe_allow_html=True)
+    for i, row in page_df.iterrows():
+        tender_id = _tender_id_from_row(row)
+        row_dict = _tender_map.get(tender_id, row.to_dict())
+    
+        title = (row_dict.get("title", "") or "").strip()
+        link = (row_dict.get("link", "") or "").strip()
+        pub = (row_dict.get("publicacion", "") or row_dict.get("published", "") or "").strip()
+        deadline = (row_dict.get("fecha_limite", "") or row_dict.get("deadline", "") or row_dict.get("plazo", "") or "").strip()
+        boost_kw = (row_dict.get("boost_keywords", "") or "").strip()
+        estimated_value = (row_dict.get("estimated_value", "") or "").strip()
+        contract_value_no_vat = (row_dict.get("contract_value_no_vat", "") or "").strip()
+    
+        outer_left, outer_right = st.columns([0.84, 0.16], vertical_alignment="center")
+        with outer_left:
+            badges = []
+            if pub:
+                badges.append(f"<span class='tender-badge'>Publicado: {escape(str(pub))}</span>")
+            if deadline:
+                badges.append(f"<span class='tender-badge'>Plazo: {escape(str(deadline))}</span>")
+            if estimated_value:
+                badges.append(f"<span class='tender-badge money'>Valor estimado: {escape(str(estimated_value))}</span>")
+            if contract_value_no_vat:
+                badges.append(f"<span class='tender-badge money'>Importe sin IVA: {escape(str(contract_value_no_vat))}</span>")
+            if boost_kw:
+                badges.append(f"<span class='tender-badge'>Keywords: {escape(str(boost_kw))}</span>")
+    
+            html = (
+                "<div class='tender-shell'><div class='tender-box'>"
+                f"<div class='tender-title-html'>{escape(str(title))}</div>"
+                + (f"<div class='tender-link-html'>{escape(str(link))}</div>" if link else "")
+                + (f"<div class='tender-badges'>{''.join(badges)}</div>" if badges else "")
+                + "</div></div>"
+            )
+            st.markdown(html, unsafe_allow_html=True)
+        with outer_right:
+            st.markdown("<div class='tender-open-wrap'>", unsafe_allow_html=True)
+            if st.button("Abrir", key=f"open_btn_{tender_id}", use_container_width=True):
+                _open_tender_modal(tender_id)
+            st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # Abrir modal si hay uno seleccionado
 
