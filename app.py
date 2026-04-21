@@ -4,6 +4,7 @@ import hashlib
 import base64
 import io
 import json
+import html
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -817,6 +818,10 @@ def _safe_filename(name: str, default: str = "archivo.pdf") -> str:
 def _pill(text: str) -> str:
     return f"<span class='pill'>{text}</span>"
 
+
+def _html_escape(value) -> str:
+    return html.escape(str(value or ""), quote=True)
+
 # Mantener expanders abiertos al pulsar botones (evita 'parpadeo' / duplicados en el primer click)
 def _open_expander(open_key: str) -> None:
     """Marca el expander como abierto antes del rerun (evita parpadeos)."""
@@ -870,24 +875,24 @@ def _tender_modal(tender_id: str, row_dict: dict):
     estimated_value = row_dict.get("estimated_value", "") or ""
     contract_value_no_vat = row_dict.get("contract_value_no_vat", "") or ""
 
-    st.markdown(f"<div class='modal-title'>{title}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='modal-title'>{_html_escape(title)}</div>", unsafe_allow_html=True)
 
     pills = []
     if pub:
-        pills.append(_pill(f"Publicado: {pub}"))
+        pills.append(_pill(_html_escape(f"Publicado: {pub}")))
     if deadline:
-        pills.append(_pill(f"Plazo: {deadline}"))
+        pills.append(_pill(_html_escape(f"Plazo: {deadline}")))
     if estimated_value:
-        pills.append(_pill(f"Valor estimado: {estimated_value}"))
+        pills.append(_pill(_html_escape(f"Valor estimado: {estimated_value}")))
     if contract_value_no_vat:
-        pills.append(_pill(f"Importe sin IVA: {contract_value_no_vat}"))
+        pills.append(_pill(_html_escape(f"Importe sin IVA: {contract_value_no_vat}")))
     if boost_kw:
-        pills.append(_pill(f"Keywords: {boost_kw}"))
+        pills.append(_pill(_html_escape(f"Keywords: {boost_kw}")))
     if pills:
         st.markdown("<div class='meta'>" + "".join(pills) + "</div>", unsafe_allow_html=True)
 
     if link:
-        st.markdown(f"**Enlace oficial:** {link}")
+        st.markdown(f"**Enlace oficial:** {_html_escape(link)}")
 
     status_box = st.empty()
     if st.session_state.get(status_key):
@@ -1067,24 +1072,26 @@ for i, row in filtered_df.iterrows():
     with outer_left:
         badges = []
         if pub:
-            badges.append(f"<span class='tender-badge'>Publicado: {pub}</span>")
+            badges.append(f"<span class='tender-badge'>Publicado: {_html_escape(pub)}</span>")
         if deadline:
-            badges.append(f"<span class='tender-badge'>Plazo: {deadline}</span>")
+            badges.append(f"<span class='tender-badge'>Plazo: {_html_escape(deadline)}</span>")
         if estimated_value:
-            badges.append(f"<span class='tender-badge money'>Valor estimado: {estimated_value}</span>")
+            badges.append(f"<span class='tender-badge money'>Valor estimado: {_html_escape(estimated_value)}</span>")
         if contract_value_no_vat:
-            badges.append(f"<span class='tender-badge money'>Importe sin IVA: {contract_value_no_vat}</span>")
+            badges.append(f"<span class='tender-badge money'>Importe sin IVA: {_html_escape(contract_value_no_vat)}</span>")
         if boost_kw:
-            badges.append(f"<span class='tender-badge'>Keywords: {boost_kw}</span>")
+            badges.append(f"<span class='tender-badge'>Keywords: {_html_escape(boost_kw)}</span>")
 
-        html = (
+        safe_title = _html_escape(title)
+        safe_link = _html_escape(link)
+        html_card = (
             "<div class='tender-shell'><div class='tender-box'>"
-            f"<div class='tender-title-html'>{title}</div>"
-            + (f"<div class='tender-link-html'>{link}</div>" if link else "")
+            f"<div class='tender-title-html'>{safe_title}</div>"
+            + (f"<div class='tender-link-html'>{safe_link}</div>" if safe_link else "")
             + (f"<div class='tender-badges'>{''.join(badges)}</div>" if badges else "")
             + "</div></div>"
         )
-        st.markdown(html, unsafe_allow_html=True)
+        st.markdown(html_card, unsafe_allow_html=True)
     with outer_right:
         st.markdown("<div class='tender-open-wrap'>", unsafe_allow_html=True)
         if st.button("Abrir", key=f"open_btn_{tender_id}", use_container_width=True):
