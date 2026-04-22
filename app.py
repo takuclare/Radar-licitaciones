@@ -45,8 +45,8 @@ MAX_LIMIT_FEED = 3000
 MAX_FEED_PAGES = 15
 
 def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool = False, show_all_dates: bool = False):
-    # El control de "mostrar todas" y de la precarga externa se gestiona aquí en app.py.
-    # radar_optimized.fetch_tenders no acepta el parámetro bypass_cache.
+    # radar_optimized.fetch_tenders no acepta bypass_cache; la decisión de usar
+    # o no la precarga remota se toma desde app.py.
     return fetch_tenders(
         limit_per_feed=MAX_LIMIT_FEED,
         max_feed_pages=MAX_FEED_PAGES,
@@ -398,6 +398,9 @@ if "msg_err" not in st.session_state:
 if "company_corpus_len" not in st.session_state:
     st.session_state.company_corpus_len = 0
 
+if "show_all_dates_last" not in st.session_state:
+    st.session_state.show_all_dates_last = None
+
 # ==============================
 # Sidebar: logo arriba + búsqueda/filtros
 # ==============================
@@ -416,7 +419,7 @@ with st.sidebar:
     show_all_dates = st.checkbox(
         "Mostrar todas independientemente de la fecha",
         value=False,
-        help="Si la marcas, se mostrarán todas las licitaciones sin limitar por la ventana temporal de 2 días.",
+        help="Si la marcas, se mostrarán licitaciones sin el filtro temporal de 2 días.",
     )
     apply_airia_filters = not show_all_dates
 
@@ -487,6 +490,10 @@ st.markdown(
 if run:
     st.session_state.msg_ok = ""
     st.session_state.msg_err = ""
+    if st.session_state.get("show_all_dates_last") != show_all_dates:
+        st.session_state.df = None
+        st.session_state.tenders_count = 0
+    st.session_state.show_all_dates_last = show_all_dates
     # Al relanzar la búsqueda, cerramos cualquier modal abierto para evitar
     # que se reabra automáticamente al terminar el rerun.
     st.session_state.active_tender = None
