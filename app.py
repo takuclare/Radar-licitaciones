@@ -1265,15 +1265,12 @@ else:
         boost_kw = (row_dict.get("boost_keywords", "") or "").strip()
         estimated_value = (row_dict.get("estimated_value", "") or "").strip()
         contract_value_no_vat = (row_dict.get("contract_value_no_vat", "") or "").strip()
-        expediente = _extract_expediente_from_row(row_dict)
 
         outer_left, outer_right = st.columns([0.88, 0.12], vertical_alignment="center")
         with outer_left:
             badges = []
             if pub:
                 badges.append(f"<span class='tender-badge'>Publicado: {escape(str(_format_date_badge(pub)))}</span>")
-            if expediente:
-                badges.append(f"<span class='tender-badge'>Expediente: {escape(str(expediente))}</span>")
             if deadline:
                 badges.append(f"<span class='tender-badge'>Plazo: {escape(str(deadline))}</span>")
             if estimated_value:
