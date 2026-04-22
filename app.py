@@ -6,6 +6,7 @@ import io
 import json
 from datetime import datetime, timezone
 from urllib.parse import urlparse
+from html import escape, unescape
 
 import pandas as pd
 import requests
@@ -327,6 +328,27 @@ style_css = """
   .tender-open-wrap div.stButton > button:hover {
     background: linear-gradient(180deg, #245fc8 0%, #1f57bd 100%) !important;
   }
+
+  .pagination-wrap div[data-testid="stHorizontalBlock"] {
+    align-items: center;
+  }
+  .pagination-wrap div.stButton > button,
+  .pagination-inline div.stButton > button {
+    padding: 0.22rem 0.55rem !important;
+    min-height: 2.0rem !important;
+    height: 2.0rem !important;
+    border-radius: 10px !important;
+    font-size: 0.90rem !important;
+    min-width: 2.5rem !important;
+  }
+  .pagination-wrap .stSelectbox label,
+  .pagination-inline .stSelectbox label {
+    margin-bottom: 0.12rem !important;
+  }
+  .pagination-inline div[data-testid="stHorizontalBlock"] {
+    align-items: end;
+    justify-content: flex-end;
+  }
   div[role="dialog"] > div {
     max-width: 980px !important;
     width: 980px !important;
@@ -396,6 +418,11 @@ with st.sidebar:
         value=False,
         help="Si la marcas, no se usará la precarga de GitHub y se lanzará una búsqueda completa en vivo. Puede tardar hasta unos 20 minutos.",
     )
+    apply_airia_filters = st.checkbox(
+        "Aplicar filtros Airia",
+        value=False,
+        help="No oculta licitaciones: prioriza en las primeras páginas las que cumplen la lógica Airia (recencia, estado/plazo y foco Airia).",
+    )
 
     run = st.button("🔄 Buscar licitaciones", use_container_width=True)
     search_progress_ph = st.empty()
@@ -462,9 +489,8 @@ st.markdown(
 # Buscar licitaciones (optimizado)
 # ==============================
 if run:
-    # Cerrar cualquier modal abierto de una búsqueda anterior para que no reaparezca
-    # automáticamente tras el rerun que provoca una nueva búsqueda.
     st.session_state.active_tender = None
+    st.session_state.results_page = 1
     st.session_state.msg_ok = ""
     st.session_state.msg_err = ""
 
@@ -653,6 +679,55 @@ def _row_matches_airia_focus(row) -> bool:
     ]
     return any(n in joined for n in needles)
 
+
+def _parse_dt_any(value):
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    for candidate in (s.replace("Z", "+00:00"), s):
+        try:
+            return datetime.fromisoformat(candidate)
+        except Exception:
+            pass
+    for fmt in ("%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s[:19], fmt)
+        except Exception:
+            pass
+    return None
+
+
+def _summary_status_text(row) -> str:
+    text_parts = [str(row.get("summary", "") or ""), str(row.get("title", "") or "")]
+    return " ".join(text_parts).lower()
+
+
+def _row_matches_airia_local(row) -> bool:
+    now = datetime.now()
+    pub = _parse_dt_any(row.get("publicacion", "") or row.get("published", ""))
+    recent_ok = bool(pub and (now - pub).total_seconds() <= 2 * 24 * 3600)
+
+    deadline = _parse_dt_any(row.get("fecha_limite", "") or row.get("deadline", "") or row.get("plazo", ""))
+    deadline_ok = True
+    if deadline is not None:
+        deadline_ok = deadline >= now
+
+    status_text = _summary_status_text(row)
+    bad_markers = [
+        "estado: ev", "estado: res", "estado: adj", "estado: formal", "estado: anul", "estado: desiert",
+        "en evaluación", "en evaluacion", "resuelta", "adjudicada", "adjudicado", "formalizada",
+        "pendiente de adjudicación", "pendiente de adjudicacion", "evaluación", "evaluacion"
+    ]
+    status_ok = not any(marker in status_text for marker in bad_markers)
+    return recent_ok and deadline_ok and status_ok and _row_matches_airia_focus(row)
+
+
+def _normalize_official_link(link: str) -> str:
+    link = unescape(str(link or "").strip())
+    return link
+
 df = df.copy()
 df["__amount_num"] = df.get("contract_value_no_vat", pd.Series(index=df.index)).apply(_parse_amount_eur)
 df["__domain"] = df.get("link", pd.Series(index=df.index)).apply(_extract_domain)
@@ -775,26 +850,40 @@ if amount_min_value is not None:
     filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1) >= amount_min_value]
 if amount_max_value is not None:
     filtered_df = filtered_df[filtered_df["__amount_num"].fillna(-1) <= amount_max_value]
+all_platforms_selected = len(selected_platform_labels) == len(platform_options)
 if selected_platform_labels:
-    filtered_df = filtered_df[filtered_df["__platform_label"].isin(selected_platform_labels)]
+    if not all_platforms_selected:
+        filtered_df = filtered_df[filtered_df["__platform_label"].isin(selected_platform_labels)]
 else:
     filtered_df = filtered_df.iloc[0:0]
+all_keywords_selected = len(selected_keywords) == len(keyword_options)
 if keyword_options:
     if selected_keywords:
-        selected_keywords_norm = {k.lower() for k in selected_keywords}
-        filtered_df = filtered_df[
-            filtered_df.apply(
-                lambda r: any(k.lower() in selected_keywords_norm for k in _extract_detected_keywords(r)),
-                axis=1,
-            )
-        ]
+        if not all_keywords_selected:
+            selected_keywords_norm = {k.lower() for k in selected_keywords}
+            filtered_df = filtered_df[
+                filtered_df.apply(
+                    lambda r: any(k.lower() in selected_keywords_norm for k in _extract_detected_keywords(r)),
+                    axis=1,
+                )
+            ]
     else:
         filtered_df = filtered_df.iloc[0:0]
 
+filtered_df["__airia_priority"] = filtered_df.apply(_row_matches_airia_local, axis=1)
+filtered_df["__airia_focus"] = filtered_df.apply(_row_matches_airia_focus, axis=1)
+if apply_airia_filters:
+    filtered_df = filtered_df.sort_values(
+        by=["__airia_priority", "__airia_focus", "score", "publicacion"],
+        ascending=[False, False, False, False],
+        na_position="last"
+    )
 filtered_df = filtered_df.drop(columns=["__amount_num", "__domain", "__platform_label"], errors="ignore").reset_index(drop=True)
 st.session_state.filtered_count = len(filtered_df)
 
 st.markdown("<div class='section-title'>Recomendadas</div>", unsafe_allow_html=True)
+if apply_airia_filters and not filtered_df.empty:
+    st.caption(f"Prioridad Airia aplicada: {int(filtered_df["__airia_priority"].sum())} licitaciones priorizadas aparecen primero, pero se siguen mostrando todas.")
 
 # ==============================
 # Carpetas y plantillas
@@ -890,7 +979,9 @@ def _tender_modal(tender_id: str, row_dict: dict):
         st.markdown("<div class='meta'>" + "".join(pills) + "</div>", unsafe_allow_html=True)
 
     if link:
-        st.markdown(f"**Enlace oficial:** {link}")
+        official_link = _normalize_official_link(link)
+        st.link_button("🔗 Abrir anuncio oficial", official_link, use_container_width=False)
+        st.caption(official_link)
 
     status_box = st.empty()
     if st.session_state.get(status_key):
@@ -1048,53 +1139,90 @@ def _tender_modal(tender_id: str, row_dict: dict):
     st.markdown("</div>", unsafe_allow_html=True)
 
 # Feed de licitaciones
-st.markdown("<div class='tender-list'>", unsafe_allow_html=True)
-
 if filtered_df.empty:
     st.info("No hay licitaciones que cumplan los filtros actuales.")
+else:
+    PAGE_SIZE = 25
+    page_count = max(1, (len(filtered_df) + PAGE_SIZE - 1) // PAGE_SIZE)
+    if "results_page" not in st.session_state:
+        st.session_state.results_page = 1
+    st.session_state.results_page = max(1, min(page_count, int(st.session_state.results_page)))
 
+    page_start = (st.session_state.results_page - 1) * PAGE_SIZE
+    page_end = page_start + PAGE_SIZE
+    page_df = filtered_df.iloc[page_start:page_end].reset_index(drop=True)
 
-for i, row in filtered_df.iterrows():
-    tender_id = _tender_id_from_row(row)
-    row_dict = _tender_map.get(tender_id, row.to_dict())
-
-    title = (row_dict.get("title", "") or "").strip()
-    link = (row_dict.get("link", "") or "").strip()
-    pub = (row_dict.get("publicacion", "") or row_dict.get("published", "") or "").strip()
-    deadline = (row_dict.get("fecha_limite", "") or row_dict.get("deadline", "") or row_dict.get("plazo", "") or "").strip()
-    boost_kw = (row_dict.get("boost_keywords", "") or "").strip()
-    estimated_value = (row_dict.get("estimated_value", "") or "").strip()
-    contract_value_no_vat = (row_dict.get("contract_value_no_vat", "") or "").strip()
-
-    outer_left, outer_right = st.columns([0.84, 0.16], vertical_alignment="center")
-    with outer_left:
-        badges = []
-        if pub:
-            badges.append(f"<span class='tender-badge'>Publicado: {pub}</span>")
-        if deadline:
-            badges.append(f"<span class='tender-badge'>Plazo: {deadline}</span>")
-        if estimated_value:
-            badges.append(f"<span class='tender-badge money'>Valor estimado: {estimated_value}</span>")
-        if contract_value_no_vat:
-            badges.append(f"<span class='tender-badge money'>Importe sin IVA: {contract_value_no_vat}</span>")
-        if boost_kw:
-            badges.append(f"<span class='tender-badge'>Keywords: {boost_kw}</span>")
-
-        html = (
-            "<div class='tender-shell'><div class='tender-box'>"
-            f"<div class='tender-title-html'>{title}</div>"
-            + (f"<div class='tender-link-html'>{link}</div>" if link else "")
-            + (f"<div class='tender-badges'>{''.join(badges)}</div>" if badges else "")
-            + "</div></div>"
-        )
-        st.markdown(html, unsafe_allow_html=True)
-    with outer_right:
-        st.markdown("<div class='tender-open-wrap'>", unsafe_allow_html=True)
-        if st.button("Abrir", key=f"open_btn_{tender_id}", use_container_width=True):
-            _open_tender_modal(tender_id)
+    pag_info_col, pag_ctrl_col = st.columns([1.55, 1.0], vertical_alignment="center")
+    with pag_info_col:
+        st.caption(f"Página {st.session_state.results_page} de {page_count} · mostrando licitaciones {page_start + 1} a {min(page_end, len(filtered_df))} de {len(filtered_df)}")
+    with pag_ctrl_col:
+        st.markdown("<div class='pagination-inline'>", unsafe_allow_html=True)
+        pag_prev_col, pag_select_col, pag_next_col = st.columns([0.26, 0.88, 0.26], vertical_alignment="end")
+        with pag_prev_col:
+            if st.button("←", key="prev_page_btn", disabled=st.session_state.results_page <= 1):
+                st.session_state.results_page -= 1
+                st.rerun()
+        with pag_select_col:
+            selected_page = st.selectbox(
+                "Página",
+                options=list(range(1, page_count + 1)),
+                index=max(0, st.session_state.results_page - 1),
+                key="results_page_selector",
+                label_visibility="collapsed",
+            )
+            if selected_page != st.session_state.results_page:
+                st.session_state.results_page = selected_page
+                st.rerun()
+        with pag_next_col:
+            if st.button("→", key="next_page_btn", disabled=st.session_state.results_page >= page_count):
+                st.session_state.results_page += 1
+                st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
-st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("<div class='tender-list'>", unsafe_allow_html=True)
+    for i, row in page_df.iterrows():
+        tender_id = _tender_id_from_row(row)
+        row_dict = _tender_map.get(tender_id, row.to_dict())
+
+        title = (row_dict.get("title", "") or "").strip()
+        link = (row_dict.get("link", "") or "").strip()
+        pub = (row_dict.get("publicacion", "") or row_dict.get("published", "") or "").strip()
+        deadline = (row_dict.get("fecha_limite", "") or row_dict.get("deadline", "") or row_dict.get("plazo", "") or "").strip()
+        boost_kw = (row_dict.get("boost_keywords", "") or "").strip()
+        estimated_value = (row_dict.get("estimated_value", "") or "").strip()
+        contract_value_no_vat = (row_dict.get("contract_value_no_vat", "") or "").strip()
+        airia_priority = bool(row_dict.get("__airia_priority", False))
+
+        outer_left, outer_right = st.columns([0.88, 0.12], vertical_alignment="center")
+        with outer_left:
+            badges = []
+            if airia_priority and apply_airia_filters:
+                badges.append("<span class='tender-badge money'>Prioridad Airia</span>")
+            if pub:
+                badges.append(f"<span class='tender-badge'>Publicado: {escape(str(pub))}</span>")
+            if deadline:
+                badges.append(f"<span class='tender-badge'>Plazo: {escape(str(deadline))}</span>")
+            if estimated_value:
+                badges.append(f"<span class='tender-badge money'>Valor estimado: {escape(str(estimated_value))}</span>")
+            if contract_value_no_vat:
+                badges.append(f"<span class='tender-badge money'>Importe sin IVA: {escape(str(contract_value_no_vat))}</span>")
+            if boost_kw:
+                badges.append(f"<span class='tender-badge'>Keywords: {escape(str(boost_kw))}</span>")
+
+            html = (
+                "<div class='tender-shell'><div class='tender-box'>"
+                f"<div class='tender-title-html'>{escape(str(title))}</div>"
+                + (f"<div class='tender-link-html'>{escape(str(link))}</div>" if link else "")
+                + (f"<div class='tender-badges'>{''.join(badges)}</div>" if badges else "")
+                + "</div></div>"
+            )
+            st.markdown(html, unsafe_allow_html=True)
+        with outer_right:
+            st.markdown("<div class='tender-open-wrap'>", unsafe_allow_html=True)
+            if st.button("Abrir", key=f"open_btn_{tender_id}", use_container_width=True):
+                _open_tender_modal(tender_id)
+            st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # Abrir modal si hay uno seleccionado
 
