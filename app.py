@@ -608,8 +608,18 @@ def _parse_amount_eur(value):
     s = str(value).strip()
     if not s:
         return None
+
     s = s.replace("EUR", "").replace("Euros", "").replace("€", "").strip()
-    s = s.replace(".", "").replace(",", ".")
+    s = s.replace(" ", "")
+
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        s = s.replace(".", "").replace(",", ".")
+
     m = re.search(r"-?\d+(?:\.\d+)?", s)
     if not m:
         return None
