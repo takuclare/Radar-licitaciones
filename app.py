@@ -484,6 +484,9 @@ st.markdown(
 if run:
     st.session_state.msg_ok = ""
     st.session_state.msg_err = ""
+    # Al relanzar la búsqueda, cerramos cualquier modal abierto para evitar
+    # que se reabra automáticamente al terminar el rerun.
+    st.session_state.active_tender = None
 
     progress_title_ph = st.empty()
     p = _GifProgressBar(search_progress_ph, 0, text="Preparando búsqueda…")
