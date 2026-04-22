@@ -876,14 +876,20 @@ if keyword_options:
         if not all_keywords_selected:
             selected_keywords_norm = {k.lower() for k in selected_keywords}
             deselected_keywords_norm = {k.lower() for k in keyword_options if k.lower() not in selected_keywords_norm}
+            only_one_keyword_selected = len(selected_keywords_norm) == 1
 
             def _row_passes_keyword_filter(row):
                 row_keywords = {str(k).strip().lower() for k in _extract_detected_keywords(row) if str(k).strip()}
                 if not row_keywords:
-                    return False
+                    return not only_one_keyword_selected
+
                 has_selected = any(k in selected_keywords_norm for k in row_keywords)
                 has_deselected = any(k in deselected_keywords_norm for k in row_keywords)
-                return has_selected and not has_deselected
+
+                if only_one_keyword_selected:
+                    return has_selected and not has_deselected
+
+                return not has_deselected
 
             filtered_df = filtered_df[
                 filtered_df.apply(_row_passes_keyword_filter, axis=1)
