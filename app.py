@@ -44,18 +44,19 @@ def cached_company_corpus(excel_path: str):
 MAX_LIMIT_FEED = 3000
 MAX_FEED_PAGES = 15
 
-def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool = False):
+def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool = False, show_all_dates: bool = False):
     # El control de "mostrar todas" y de la precarga externa se gestiona aquí en app.py.
     # radar_optimized.fetch_tenders no acepta el parámetro bypass_cache.
     return fetch_tenders(
         limit_per_feed=MAX_LIMIT_FEED,
         max_feed_pages=MAX_FEED_PAGES,
-        only_last_days=2,
-        exclude_deadline_soon_days=2,
+        only_last_days=2 if not show_all_dates else 36500,
+        exclude_deadline_soon_days=2 if not show_all_dates else 0,
         only_priority_cpvs=False,
         progress_cb=progress_cb,
         pre_rank_corpus=company_corpus,
         deep_review_top_n=30,
+        apply_airia_filters=not show_all_dates,
     )
 
 # ==============================
@@ -412,7 +413,12 @@ with st.sidebar:
         value=False,
         help="Si la marcas, no se usará la precarga de GitHub y se lanzará una búsqueda completa en vivo. Puede tardar hasta unos 20 minutos.",
     )
-    apply_airia_filters = True
+    show_all_dates = st.checkbox(
+        "Mostrar todas independientemente de la fecha",
+        value=False,
+        help="Si la marcas, se mostrarán todas las licitaciones sin limitar por la ventana temporal de 2 días.",
+    )
+    apply_airia_filters = not show_all_dates
 
     run = st.button("🔄 Buscar licitaciones", use_container_width=True)
     search_progress_ph = st.empty()
@@ -512,7 +518,7 @@ if run:
         used_remote_snapshot = False
         remote_error = None
 
-        if not bypass_cache:
+        if not bypass_cache and not show_all_dates:
             selected_snapshot_url = REMOTE_SNAPSHOT_URL_ALL
             if selected_snapshot_url:
                 try:
@@ -567,7 +573,12 @@ if run:
                         cache_hits=int(meta.get('cache_hits', 0) or 0),
                     )
 
-                tenders = live_fetch_tenders(company_corpus=company_corpus, progress_cb=_cb, bypass_cache=True)
+                tenders = live_fetch_tenders(
+                    company_corpus=company_corpus,
+                    progress_cb=_cb,
+                    bypass_cache=True,
+                    show_all_dates=show_all_dates,
+                )
 
             st.session_state.tenders_count = len(tenders)
 
@@ -931,7 +942,9 @@ if keyword_options:
     else:
         filtered_df = filtered_df.iloc[0:0]
 
-filtered_df["__airia_priority"] = filtered_df.apply(_row_matches_airia_local, axis=1)
+filtered_df["__airia_priority"] = (
+    filtered_df.apply(_row_matches_airia_local, axis=1) if apply_airia_filters else False
+)
 filtered_df["__airia_focus"] = filtered_df.apply(_row_matches_airia_focus, axis=1)
 filtered_df["__bloqueada_sort"] = filtered_df.get("bloqueada", False).fillna(False).astype(bool)
 if apply_airia_filters:
