@@ -1139,32 +1139,36 @@ else:
         st.session_state.results_page = 1
     st.session_state.results_page = max(1, min(page_count, int(st.session_state.results_page)))
 
-    st.markdown("<div class='pagination-wrap'>", unsafe_allow_html=True)
-    pag_left, pag_mid, pag_right = st.columns([1, 1.8, 1])
-    with pag_left:
-        if st.button("←", key="prev_page_btn", disabled=st.session_state.results_page <= 1):
-            st.session_state.results_page -= 1
-            st.rerun()
-    with pag_mid:
-        selected_page = st.selectbox(
-            "Página",
-            options=list(range(1, page_count + 1)),
-            index=max(0, st.session_state.results_page - 1),
-            key="results_page_selector",
-        )
-        if selected_page != st.session_state.results_page:
-            st.session_state.results_page = selected_page
-            st.rerun()
-    with pag_right:
-        if st.button("→", key="next_page_btn", disabled=st.session_state.results_page >= page_count):
-            st.session_state.results_page += 1
-            st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
-
     page_start = (st.session_state.results_page - 1) * PAGE_SIZE
     page_end = page_start + PAGE_SIZE
     page_df = filtered_df.iloc[page_start:page_end].reset_index(drop=True)
-    st.caption(f"Página {st.session_state.results_page} de {page_count} · mostrando licitaciones {page_start + 1} a {min(page_end, len(filtered_df))} de {len(filtered_df)}")
+
+    pag_info_col, pag_controls_col = st.columns([2.2, 1.4], vertical_alignment="bottom")
+    with pag_info_col:
+        st.caption(f"Página {st.session_state.results_page} de {page_count} · mostrando licitaciones {page_start + 1} a {min(page_end, len(filtered_df))} de {len(filtered_df)}")
+    with pag_controls_col:
+        st.markdown("<div class='pagination-wrap'>", unsafe_allow_html=True)
+        pag_left, pag_mid, pag_right = st.columns([0.48, 1.5, 0.48])
+        with pag_left:
+            if st.button("←", key="prev_page_btn", disabled=st.session_state.results_page <= 1, use_container_width=True):
+                st.session_state.results_page -= 1
+                st.rerun()
+        with pag_mid:
+            selected_page = st.selectbox(
+                "Página",
+                options=list(range(1, page_count + 1)),
+                index=max(0, st.session_state.results_page - 1),
+                key="results_page_selector",
+                label_visibility="collapsed",
+            )
+            if selected_page != st.session_state.results_page:
+                st.session_state.results_page = selected_page
+                st.rerun()
+        with pag_right:
+            if st.button("→", key="next_page_btn", disabled=st.session_state.results_page >= page_count, use_container_width=True):
+                st.session_state.results_page += 1
+                st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown("<div class='tender-list'>", unsafe_allow_html=True)
     for i, row in page_df.iterrows():
