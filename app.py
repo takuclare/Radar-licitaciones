@@ -699,6 +699,39 @@ def _parse_dt_any(value):
     return None
 
 
+def _format_date_badge(value: str) -> str:
+    dt = _parse_dt_any(value)
+    if dt is None:
+        s = str(value or "").strip()
+        return s[:10] if s else ""
+    return dt.strftime("%d/%m/%Y")
+
+
+def _extract_expediente_from_row(row) -> str:
+    candidates = [
+        row.get("expediente", "") if isinstance(row, dict) else "",
+        row.get("summary", "") if isinstance(row, dict) else "",
+        row.get("title", "") if isinstance(row, dict) else "",
+    ]
+
+    patterns = [
+        r"(?:expediente|exp\.?)[\s:ºnº#-]*([A-Z0-9][A-Z0-9\-/.]{2,})",
+        r"\b(\d{1,6}/\d{4})\b",
+        r"\b([A-Z]{2,}-\d{1,6}/\d{2,4})\b",
+    ]
+
+    for raw in candidates:
+        text = str(raw or "")
+        if not text:
+            continue
+        for pattern in patterns:
+            m = re.search(pattern, text, flags=re.IGNORECASE)
+            if m:
+                return m.group(1).strip(" .;,-")
+
+    return ""
+
+
 def _summary_status_text(row) -> str:
     text_parts = [str(row.get("summary", "") or ""), str(row.get("title", "") or "")]
     return " ".join(text_parts).lower()
@@ -911,8 +944,6 @@ filtered_df = filtered_df.drop(columns=["__amount_num", "__domain", "__platform_
 st.session_state.filtered_count = len(filtered_df)
 
 st.markdown("<div class='section-title'>Recomendadas</div>", unsafe_allow_html=True)
-if apply_airia_filters and not filtered_df.empty:
-    st.caption(f"Prioridad Airia aplicada: {int(filtered_df['__airia_priority'].sum())} licitaciones priorizadas aparecen primero, pero se siguen mostrando todas.")
 
 # ==============================
 # Carpetas y plantillas
@@ -995,7 +1026,7 @@ def _tender_modal(tender_id: str, row_dict: dict):
 
     pills = []
     if pub:
-        pills.append(_pill(f"Publicado: {pub}"))
+        pills.append(_pill(f"Publicado: {_format_date_badge(pub)}"))
     if deadline:
         pills.append(_pill(f"Plazo: {deadline}"))
     if estimated_value:
@@ -1234,15 +1265,15 @@ else:
         boost_kw = (row_dict.get("boost_keywords", "") or "").strip()
         estimated_value = (row_dict.get("estimated_value", "") or "").strip()
         contract_value_no_vat = (row_dict.get("contract_value_no_vat", "") or "").strip()
-        airia_priority = bool(row_dict.get("__airia_priority", False))
+        expediente = _extract_expediente_from_row(row_dict)
 
         outer_left, outer_right = st.columns([0.88, 0.12], vertical_alignment="center")
         with outer_left:
             badges = []
-            if airia_priority and apply_airia_filters:
-                badges.append("<span class='tender-badge money'>Prioridad Airia</span>")
             if pub:
-                badges.append(f"<span class='tender-badge'>Publicado: {escape(str(pub))}</span>")
+                badges.append(f"<span class='tender-badge'>Publicado: {escape(str(_format_date_badge(pub)))}</span>")
+            if expediente:
+                badges.append(f"<span class='tender-badge'>Expediente: {escape(str(expediente))}</span>")
             if deadline:
                 badges.append(f"<span class='tender-badge'>Plazo: {escape(str(deadline))}</span>")
             if estimated_value:
