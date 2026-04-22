@@ -330,24 +330,17 @@ style_css = """
   }
 
   .pagination-wrap div[data-testid="stHorizontalBlock"] {
-    align-items: center;
-  }
-  .pagination-wrap div.stButton > button,
-  .pagination-inline div.stButton > button {
-    padding: 0.22rem 0.55rem !important;
-    min-height: 2.0rem !important;
-    height: 2.0rem !important;
-    border-radius: 10px !important;
-    font-size: 0.90rem !important;
-    min-width: 2.5rem !important;
-  }
-  .pagination-wrap .stSelectbox label,
-  .pagination-inline .stSelectbox label {
-    margin-bottom: 0.12rem !important;
-  }
-  .pagination-inline div[data-testid="stHorizontalBlock"] {
     align-items: end;
-    justify-content: flex-end;
+  }
+  .pagination-wrap div.stButton > button {
+    padding: 0.30rem 0.70rem !important;
+    min-height: 2.2rem !important;
+    height: 2.2rem !important;
+    border-radius: 10px !important;
+    font-size: 0.95rem !important;
+  }
+  .pagination-wrap .stSelectbox label {
+    margin-bottom: 0.2rem !important;
   }
   div[role="dialog"] > div {
     max-width: 980px !important;
@@ -489,8 +482,6 @@ st.markdown(
 # Buscar licitaciones (optimizado)
 # ==============================
 if run:
-    st.session_state.active_tender = None
-    st.session_state.results_page = 1
     st.session_state.msg_ok = ""
     st.session_state.msg_err = ""
 
@@ -1152,17 +1143,17 @@ else:
     page_end = page_start + PAGE_SIZE
     page_df = filtered_df.iloc[page_start:page_end].reset_index(drop=True)
 
-    pag_info_col, pag_ctrl_col = st.columns([1.55, 1.0], vertical_alignment="center")
+    pag_info_col, pag_controls_col = st.columns([2.2, 1.4], vertical_alignment="bottom")
     with pag_info_col:
         st.caption(f"Página {st.session_state.results_page} de {page_count} · mostrando licitaciones {page_start + 1} a {min(page_end, len(filtered_df))} de {len(filtered_df)}")
-    with pag_ctrl_col:
-        st.markdown("<div class='pagination-inline'>", unsafe_allow_html=True)
-        pag_prev_col, pag_select_col, pag_next_col = st.columns([0.26, 0.88, 0.26], vertical_alignment="end")
-        with pag_prev_col:
-            if st.button("←", key="prev_page_btn", disabled=st.session_state.results_page <= 1):
+    with pag_controls_col:
+        st.markdown("<div class='pagination-wrap'>", unsafe_allow_html=True)
+        pag_left, pag_mid, pag_right = st.columns([0.48, 1.5, 0.48])
+        with pag_left:
+            if st.button("←", key="prev_page_btn", disabled=st.session_state.results_page <= 1, use_container_width=True):
                 st.session_state.results_page -= 1
                 st.rerun()
-        with pag_select_col:
+        with pag_mid:
             selected_page = st.selectbox(
                 "Página",
                 options=list(range(1, page_count + 1)),
@@ -1173,8 +1164,8 @@ else:
             if selected_page != st.session_state.results_page:
                 st.session_state.results_page = selected_page
                 st.rerun()
-        with pag_next_col:
-            if st.button("→", key="next_page_btn", disabled=st.session_state.results_page >= page_count):
+        with pag_right:
+            if st.button("→", key="next_page_btn", disabled=st.session_state.results_page >= page_count, use_container_width=True):
                 st.session_state.results_page += 1
                 st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
