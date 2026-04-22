@@ -829,6 +829,7 @@ def llm_generate_excel_fields(
     tender_link: str,
     pcap_text: str,
     ppt_text: str,
+    extra_text: str = "",
     progress_cb: Optional[Callable[[float, str], None]] = None
 ) -> Dict:
     client = _get_client()
@@ -1380,6 +1381,7 @@ def generate_ai_summary_excel(
     out_folder: str,
     manual_pcap_path: str,
     manual_ppt_path: Optional[str] = None,
+    manual_extra_paths: Optional[List[str]] = None,
     progress_cb: Optional[Callable[[float, str], None]] = None
 ) -> Tuple[str, str]:
     template_path = os.path.join(template_folder, "plantilla_resumen.xlsx")
@@ -1413,18 +1415,39 @@ def generate_ai_summary_excel(
         ppt_text = pdf_to_text_keep_pages(manual_ppt_path)  # type: ignore
         if progress_cb:
             try:
-                progress_cb(0.30, "PPT leído. Lanzando IA…")
+                progress_cb(0.30, "PPT leído. Preparando documentación adicional…")
             except Exception:
                 pass
         if len(re.sub(r"\s+", "", ppt_text)) < 800:
             ppt_text = ""
             ppt_exists = False
 
+    extra_text_blocks: List[str] = []
+    extra_count = 0
+    for extra_path in (manual_extra_paths or []):
+        if extra_path and os.path.exists(extra_path):
+            try:
+                extra_raw = pdf_to_text_keep_pages(extra_path)
+                if len(re.sub(r"\s+", "", extra_raw)) >= 200:
+                    extra_count += 1
+                    extra_name = os.path.basename(extra_path)
+                    PLACEHOLDER
+            except Exception:
+                pass
+
+    extra_text = "\n\n".join(extra_text_blocks)
+    if progress_cb:
+        try:
+            progress_cb(0.32, "Documentación preparada. Lanzando IA…")
+        except Exception:
+            pass
+
     fields = llm_generate_excel_fields(
         tender_title=tender_title,
         tender_link=tender_link,
         pcap_text=pcap_text,
         ppt_text=ppt_text,
+        extra_text=extra_text,
         progress_cb=progress_cb,
     )
 
@@ -1451,6 +1474,7 @@ def generate_ai_summary_excel(
 
     info = "Excel Resumen IA generado usando plantilla fija"
     info += " | Con PPT" if ppt_exists else " | Sin PPT"
+    info += f" | Docs adicionales: {extra_count}"
     info += " | GPT-5.4 (Responses): max_output_tokens=6500 (sin response_format por SDK antiguo)"
     info += " | Con control anti-referencias + corrección + vacíos sospechosos"
     return out_path, info

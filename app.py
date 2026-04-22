@@ -411,11 +411,7 @@ with st.sidebar:
         value=False,
         help="Si la marcas, no se usará la precarga de GitHub y se lanzará una búsqueda completa en vivo. Puede tardar hasta unos 20 minutos.",
     )
-    apply_airia_filters = st.checkbox(
-        "Aplicar filtros Airia",
-        value=False,
-        help="No oculta licitaciones: prioriza en las primeras páginas las que cumplen la lógica Airia (recencia, estado/plazo y foco Airia).",
-    )
+    apply_airia_filters = True
 
     run = st.button("🔄 Buscar licitaciones", use_container_width=True)
     search_progress_ph = st.empty()
@@ -887,7 +883,7 @@ st.session_state.filtered_count = len(filtered_df)
 
 st.markdown("<div class='section-title'>Recomendadas</div>", unsafe_allow_html=True)
 if apply_airia_filters and not filtered_df.empty:
-    st.caption(f"Prioridad Airia aplicada: {int(filtered_df["__airia_priority"].sum())} licitaciones priorizadas aparecen primero, pero se siguen mostrando todas.")
+    st.caption(f"Prioridad Airia aplicada: {int(filtered_df['__airia_priority'].sum())} licitaciones priorizadas aparecen primero, pero se siguen mostrando todas.")
 
 # ==============================
 # Carpetas y plantillas
@@ -1059,6 +1055,11 @@ def _tender_modal(tender_id: str, row_dict: dict):
                 type=["pdf"],
                 key=f"up_ppt_{tender_id}"
             )
+            uploaded_extra = st.file_uploader(
+                "Sube Anuncio u otros (PDF) - opcional",
+                type=["pdf"],
+                key=f"up_extra_{tender_id}"
+            )
             submitted = st.form_submit_button("🧠 Generar Excel Resumen IA")
         ai_progress_ph = st.empty()
 
@@ -1078,6 +1079,14 @@ def _tender_modal(tender_id: str, row_dict: dict):
                     ppt_path = os.path.join(cache_folder, f"manual_{tender_id}_PPT_{ppt_name}")
                     with open(ppt_path, "wb") as f:
                         f.write(uploaded_ppt.getbuffer())
+
+                extra_paths = []
+                if uploaded_extra is not None:
+                    extra_name = _safe_filename(uploaded_extra.name, "ANUNCIO_OTROS.pdf")
+                    extra_path = os.path.join(cache_folder, f"manual_{tender_id}_EXTRA_{extra_name}")
+                    with open(extra_path, "wb") as f:
+                        f.write(uploaded_extra.getbuffer())
+                    extra_paths.append(extra_path)
 
                 try:
                     pb = _GifProgressBar(ai_progress_ph, 0, text="Preparando…")
@@ -1102,6 +1111,7 @@ def _tender_modal(tender_id: str, row_dict: dict):
                             out_folder=out_folder,
                             manual_pcap_path=pcap_path,
                             manual_ppt_path=ppt_path,
+                            manual_extra_paths=extra_paths,
                             progress_cb=_ai_cb
                         )
 
