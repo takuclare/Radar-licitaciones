@@ -44,7 +44,9 @@ def cached_company_corpus(excel_path: str):
 MAX_LIMIT_FEED = 3000
 MAX_FEED_PAGES = 15
 
-def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool = False, show_all_dates: bool = False):
+def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool = False):
+    # El control de "mostrar todas" y de la precarga externa se gestiona aquí en app.py.
+    # radar_optimized.fetch_tenders no acepta el parámetro bypass_cache.
     return fetch_tenders(
         limit_per_feed=MAX_LIMIT_FEED,
         max_feed_pages=MAX_FEED_PAGES,
@@ -54,8 +56,6 @@ def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool
         progress_cb=progress_cb,
         pre_rank_corpus=company_corpus,
         deep_review_top_n=30,
-        bypass_cache=bypass_cache,
-        apply_airia_filters=not show_all_dates,
     )
 
 # ==============================
@@ -412,11 +412,6 @@ with st.sidebar:
         value=False,
         help="Si la marcas, no se usará la precarga de GitHub y se lanzará una búsqueda completa en vivo. Puede tardar hasta unos 20 minutos.",
     )
-    show_all_dates = st.checkbox(
-        "Mostrar todas independientemente de la fecha",
-        value=False,
-        help="Si la marcas, se mostrarán todas las licitaciones aunque no sean de los últimos 2 días. Si la desmarcas, vuelve el filtro temporal normal.",
-    )
     apply_airia_filters = True
 
     run = st.button("🔄 Buscar licitaciones", use_container_width=True)
@@ -518,7 +513,7 @@ if run:
         remote_error = None
 
         if not bypass_cache:
-            selected_snapshot_url = REMOTE_SNAPSHOT_URL_ALL if not show_all_dates else ""
+            selected_snapshot_url = REMOTE_SNAPSHOT_URL_ALL
             if selected_snapshot_url:
                 try:
                     p.progress(0.20, text="Consultando precarga externa…")
@@ -572,7 +567,7 @@ if run:
                         cache_hits=int(meta.get('cache_hits', 0) or 0),
                     )
 
-                tenders = live_fetch_tenders(company_corpus=company_corpus, progress_cb=_cb, bypass_cache=True, show_all_dates=show_all_dates)
+                tenders = live_fetch_tenders(company_corpus=company_corpus, progress_cb=_cb, bypass_cache=True)
 
             st.session_state.tenders_count = len(tenders)
 
@@ -587,8 +582,6 @@ if run:
             st.session_state.msg_ok = f"Ranking generado ✅ (mostrando {len(df)} de {st.session_state.tenders_count})"
             if remote_error:
                 st.info(f"No se pudo usar la precarga externa y se hizo búsqueda normal: {remote_error}")
-            elif show_all_dates and not bypass_cache:
-                st.info("Se ha omitido la precarga externa porque has activado mostrar todas independientemente de la fecha.")
             st.success(st.session_state.msg_ok)
     except Exception as e:
         st.session_state.df = None
