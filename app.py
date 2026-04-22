@@ -811,6 +811,20 @@ with st.sidebar:
             if st.checkbox(kw, value=True, key=key):
                 selected_keywords.append(kw)
 
+current_filters_signature = json.dumps({
+    "text_query": (text_query or "").strip().lower(),
+    "amount_min_raw": (amount_min_raw or "").strip(),
+    "amount_max_raw": (amount_max_raw or "").strip(),
+    "platforms": sorted(selected_platform_labels),
+    "keywords": sorted(selected_keywords),
+}, ensure_ascii=False, sort_keys=True)
+previous_filters_signature = st.session_state.get("filters_signature")
+if previous_filters_signature is None:
+    st.session_state["filters_signature"] = current_filters_signature
+elif previous_filters_signature != current_filters_signature:
+    st.session_state["filters_signature"] = current_filters_signature
+    st.session_state.active_tender = None
+
 filtered_df = df.copy()
 if text_query:
     q = text_query.strip().lower()
