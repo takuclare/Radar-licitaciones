@@ -12,14 +12,13 @@ if str(ROOT) not in sys.path:
 
 from radar_optimized import load_company_corpus, fetch_tenders, score_tenders, _has_priority_cpv_airia  # noqa: E402
 
-
 DATA_EXCEL = os.getenv("DATA_EXCEL", str(ROOT / "data" / "TRABAJOS AIRIA.xlsx"))
 OUTPUT_DIR = Path(os.getenv("SNAPSHOT_OUTPUT_DIR", str(ROOT / "snapshot_output")))
 LIMIT_PER_FEED = int(os.getenv("SNAPSHOT_LIMIT_PER_FEED", "3000") or 3000)
 MAX_FEED_PAGES = int(os.getenv("SNAPSHOT_MAX_FEED_PAGES", "15") or 15)
-ONLY_LAST_DAYS = int(os.getenv("SNAPSHOT_ONLY_LAST_DAYS", "2") or 2)
-EXCLUDE_DEADLINE_SOON_DAYS = int(os.getenv("SNAPSHOT_EXCLUDE_DEADLINE_SOON_DAYS", "2") or 2)
-
+ONLY_LAST_DAYS = int(os.getenv("SNAPSHOT_ONLY_LAST_DAYS", "4") or 4)
+EXCLUDE_DEADLINE_SOON_DAYS = int(os.getenv("SNAPSHOT_EXCLUDE_DEADLINE_SOON_DAYS", "0") or 0)
+SNAPSHOT_LOGIC_VERSION = "soft_sort_4d_v1"
 
 def _safe_value(value: Any):
     if value is None:
@@ -37,13 +36,11 @@ def _safe_value(value: Any):
             pass
     return str(value)
 
-
 def _df_to_rows(df):
     rows = []
     for record in df.to_dict(orient="records"):
         rows.append({k: _safe_value(v) for k, v in record.items()})
     return rows
-
 
 def build_snapshot():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -72,6 +69,7 @@ def build_snapshot():
         progress_cb=progress_cb,
         pre_rank_corpus=corpus,
         deep_review_top_n=30,
+        apply_airia_filters=True,
     )
 
     print(f"[snapshot] Licitaciones detectadas: {len(tenders)}")
@@ -89,6 +87,8 @@ def build_snapshot():
         "only_last_days": ONLY_LAST_DAYS,
         "exclude_deadline_soon_days": EXCLUDE_DEADLINE_SOON_DAYS,
         "feed_entries": max((evt.get("feed_entries", 0) for evt in progress_events if isinstance(evt, dict)), default=0),
+        "snapshot_logic_version": SNAPSHOT_LOGIC_VERSION,
+        "includes_old_and_expired_for_sorting": True,
     }
 
     snapshot_all = {
@@ -112,7 +112,6 @@ def build_snapshot():
 
     print(f"[snapshot] Guardado: {all_path}")
     print(f"[snapshot] Guardado: {cpv_path}")
-
 
 if __name__ == "__main__":
     build_snapshot()
