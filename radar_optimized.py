@@ -111,8 +111,19 @@ KEYWORDS_BLOCK = [
     "seguridad privada",
     "catering",
     "mantenimiento de ascensores",
-    "carpinter", "Rent", "Alquil", "Veh","CCTV","Varada","poda","tala","Adquisicion","Adquisición"
+    "carpinter",
+    "Rent",
+    "Alquil",
+    "Veh",
+    "CCTV",
+    "Varada",
+    "poda",
+    "tala",
+    "Adquisicion",
+    "Adquisición",
     "Suministro",
+    "Pañales",
+    "Ferretería",
 ]
 
 
@@ -1149,13 +1160,17 @@ def score_tenders(tenders: List[Tender], company_corpus: List[str], top_k: Optio
 
     df = pd.DataFrame(rows)
 
-    # ✅ PRIORIDAD ABSOLUTA: si tiene CPV prioritario, va arriba sí o sí
+    # ✅ PRIORIDAD ABSOLUTA: si tiene CPV prioritario, va arriba sí o sí,
+    # pero cualquier licitación con palabras bloqueadas debe ir SIEMPRE al final.
     df["__has_priority_cpv"] = df["priority_cpvs"].apply(lambda x: bool(x and str(x).strip()))
 
-    # Orden jerárquico: 1) CPV prioritario  2) score
+    # Orden jerárquico:
+    # 1) NO bloqueadas primero
+    # 2) dentro de las no bloqueadas, CPV prioritario arriba
+    # 3) score descendente
     df = df.sort_values(
-        by=["__has_priority_cpv", "score"],
-        ascending=[False, False]
+        by=["bloqueada", "__has_priority_cpv", "score"],
+        ascending=[True, False, False]
     ).reset_index(drop=True)
 
     df = df.drop(columns=["__has_priority_cpv"], errors="ignore")

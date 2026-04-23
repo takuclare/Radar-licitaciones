@@ -44,17 +44,19 @@ def cached_company_corpus(excel_path: str):
 MAX_LIMIT_FEED = 3000
 MAX_FEED_PAGES = 15
 
-def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool = False):
+def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool = False, show_all_dates: bool = False):
+    # radar_optimized.fetch_tenders no acepta bypass_cache; la decisión de usar
+    # o no la precarga remota se toma desde app.py.
     return fetch_tenders(
         limit_per_feed=MAX_LIMIT_FEED,
         max_feed_pages=MAX_FEED_PAGES,
-        only_last_days=2,
-        exclude_deadline_soon_days=2,
+        only_last_days=2 if not show_all_dates else 36500,
+        exclude_deadline_soon_days=2 if not show_all_dates else 0,
         only_priority_cpvs=False,
         progress_cb=progress_cb,
         pre_rank_corpus=company_corpus,
         deep_review_top_n=30,
-        bypass_cache=bypass_cache,
+        apply_airia_filters=not show_all_dates,
     )
 
 # ==============================
@@ -396,6 +398,9 @@ if "msg_err" not in st.session_state:
 if "company_corpus_len" not in st.session_state:
     st.session_state.company_corpus_len = 0
 
+if "show_all_dates_last" not in st.session_state:
+    st.session_state.show_all_dates_last = None
+
 # ==============================
 # Sidebar: logo arriba + búsqueda/filtros
 # ==============================
@@ -411,7 +416,12 @@ with st.sidebar:
         value=False,
         help="Si la marcas, no se usará la precarga de GitHub y se lanzará una búsqueda completa en vivo. Puede tardar hasta unos 20 minutos.",
     )
-    apply_airia_filters = True
+    show_all_dates = st.checkbox(
+        "Mostrar todas independientemente de la fecha",
+        value=False,
+        help="Si la marcas, se mostrarán licitaciones sin el filtro temporal de 2 días.",
+    )
+    apply_airia_filters = not show_all_dates
 
     run = st.button("🔄 Buscar licitaciones", use_container_width=True)
     search_progress_ph = st.empty()
@@ -480,6 +490,10 @@ st.markdown(
 if run:
     st.session_state.msg_ok = ""
     st.session_state.msg_err = ""
+    if st.session_state.get("show_all_dates_last") != show_all_dates:
+        st.session_state.df = None
+        st.session_state.tenders_count = 0
+    st.session_state.show_all_dates_last = show_all_dates
     # Al relanzar la búsqueda, cerramos cualquier modal abierto para evitar
     # que se reabra automáticamente al terminar el rerun.
     st.session_state.active_tender = None
@@ -511,7 +525,7 @@ if run:
         used_remote_snapshot = False
         remote_error = None
 
-        if not bypass_cache:
+        if not bypass_cache and not show_all_dates:
             selected_snapshot_url = REMOTE_SNAPSHOT_URL_ALL
             if selected_snapshot_url:
                 try:
@@ -566,7 +580,12 @@ if run:
                         cache_hits=int(meta.get('cache_hits', 0) or 0),
                     )
 
-                tenders = live_fetch_tenders(company_corpus=company_corpus, progress_cb=_cb, bypass_cache=True)
+                tenders = live_fetch_tenders(
+                    company_corpus=company_corpus,
+                    progress_cb=_cb,
+                    bypass_cache=True,
+                    show_all_dates=show_all_dates,
+                )
 
             st.session_state.tenders_count = len(tenders)
 
@@ -697,6 +716,39 @@ def _parse_dt_any(value):
         except Exception:
             pass
     return None
+
+
+def _format_date_badge(value: str) -> str:
+    dt = _parse_dt_any(value)
+    if dt is None:
+        s = str(value or "").strip()
+        return s[:10] if s else ""
+    return dt.strftime("%d/%m/%Y")
+
+
+def _extract_expediente_from_row(row) -> str:
+    candidates = [
+        row.get("expediente", "") if isinstance(row, dict) else "",
+        row.get("summary", "") if isinstance(row, dict) else "",
+        row.get("title", "") if isinstance(row, dict) else "",
+    ]
+
+    patterns = [
+        r"(?:expediente|exp\.?)[\s:ºnº#-]*([A-Z0-9][A-Z0-9\-/.]{2,})",
+        r"\b(\d{1,6}/\d{4})\b",
+        r"\b([A-Z]{2,}-\d{1,6}/\d{2,4})\b",
+    ]
+
+    for raw in candidates:
+        text = str(raw or "")
+        if not text:
+            continue
+        for pattern in patterns:
+            m = re.search(pattern, text, flags=re.IGNORECASE)
+            if m:
+                return m.group(1).strip(" .;,-")
+
+    return ""
 
 
 def _summary_status_text(row) -> str:
@@ -897,20 +949,22 @@ if keyword_options:
     else:
         filtered_df = filtered_df.iloc[0:0]
 
-filtered_df["__airia_priority"] = filtered_df.apply(_row_matches_airia_local, axis=1)
+filtered_df["__airia_priority"] = (
+    filtered_df.apply(_row_matches_airia_local, axis=1) if apply_airia_filters else False
+)
 filtered_df["__airia_focus"] = filtered_df.apply(_row_matches_airia_focus, axis=1)
+filtered_df["__bloqueada_sort"] = filtered_df.get("bloqueada", False).fillna(False).astype(bool)
 if apply_airia_filters:
     filtered_df = filtered_df.sort_values(
-        by=["__airia_priority", "__airia_focus", "score", "publicacion"],
-        ascending=[False, False, False, False],
+        by=["__bloqueada_sort", "__airia_priority", "__airia_focus", "score", "publicacion"],
+        ascending=[True, False, False, False, False],
         na_position="last"
     )
+filtered_df = filtered_df.drop(columns=["__bloqueada_sort"], errors="ignore")
 filtered_df = filtered_df.drop(columns=["__amount_num", "__domain", "__platform_label"], errors="ignore").reset_index(drop=True)
 st.session_state.filtered_count = len(filtered_df)
 
 st.markdown("<div class='section-title'>Recomendadas</div>", unsafe_allow_html=True)
-if apply_airia_filters and not filtered_df.empty:
-    st.caption(f"Prioridad Airia aplicada: {int(filtered_df['__airia_priority'].sum())} licitaciones priorizadas aparecen primero, pero se siguen mostrando todas.")
 
 # ==============================
 # Carpetas y plantillas
@@ -993,7 +1047,7 @@ def _tender_modal(tender_id: str, row_dict: dict):
 
     pills = []
     if pub:
-        pills.append(_pill(f"Publicado: {pub}"))
+        pills.append(_pill(f"Publicado: {_format_date_badge(pub)}"))
     if deadline:
         pills.append(_pill(f"Plazo: {deadline}"))
     if estimated_value:
@@ -1232,15 +1286,12 @@ else:
         boost_kw = (row_dict.get("boost_keywords", "") or "").strip()
         estimated_value = (row_dict.get("estimated_value", "") or "").strip()
         contract_value_no_vat = (row_dict.get("contract_value_no_vat", "") or "").strip()
-        airia_priority = bool(row_dict.get("__airia_priority", False))
 
         outer_left, outer_right = st.columns([0.88, 0.12], vertical_alignment="center")
         with outer_left:
             badges = []
-            if airia_priority and apply_airia_filters:
-                badges.append("<span class='tender-badge money'>Prioridad Airia</span>")
             if pub:
-                badges.append(f"<span class='tender-badge'>Publicado: {escape(str(pub))}</span>")
+                badges.append(f"<span class='tender-badge'>Publicado: {escape(str(_format_date_badge(pub)))}</span>")
             if deadline:
                 badges.append(f"<span class='tender-badge'>Plazo: {escape(str(deadline))}</span>")
             if estimated_value:
