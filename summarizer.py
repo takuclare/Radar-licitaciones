@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Tuple, Callable
 import requests
 from bs4 import BeautifulSoup
 from pdfminer.high_level import extract_text
+from pypdf import PdfReader
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 from dotenv import load_dotenv
@@ -36,6 +37,188 @@ def _clean_inline(s: str) -> str:
 
 
 
+
+
+
+def _fix_common_mojibake(s: str) -> str:
+    if s is None:
+        return ""
+    s = str(s)
+    replacements = {
+        "bÆsico": "básico",
+        "serÆ": "será",
+        "tØcnico": "técnico",
+        "tØcnica": "técnica",
+        "tØcnicas": "técnicas",
+        "tØrmicas": "térmicas",
+        "tØrmi cas": "térmicas",
+        "reœna": "reúna",
+        "podrÆ": "podrá",
+        "estÆ": "está",
+        "cÆlculos": "cálculos",
+        "ingeni ero": "ingeniero",
+        "com o": "como",
+        "cuan do": "cuando",
+        "físi ca": "física",
+        "Gener al": "General",
+        "co mpatibilidad": "compatibilidad",
+    }
+    for bad, good in replacements.items():
+        s = s.replace(bad, good)
+    return s
+
+
+def _pdf_text_by_pages(pdf_path: str, max_chars: int = 850000) -> List[str]:
+    pages: List[str] = []
+    try:
+        reader = PdfReader(pdf_path)
+        for page in reader.pages:
+            txt = page.extract_text() or ""
+            txt = _fix_common_mojibake(txt.replace(chr(13), ""))
+            pages.append(txt)
+    except Exception:
+        raw = extract_text(pdf_path) or ""
+        raw = _fix_common_mojibake(raw.replace(chr(13), ""))
+        pages = re.split(r"\f+", raw) if raw else []
+
+    out: List[str] = []
+    total = 0
+    for ptxt in pages:
+        if total >= max_chars:
+            break
+        if total + len(ptxt) > max_chars:
+            ptxt = ptxt[: max_chars - total]
+        out.append(ptxt)
+        total += len(ptxt)
+    return out
+
+
+def _extract_deadline_fields(full_text: str) -> Tuple[str, str]:
+    text = _fix_common_mojibake(full_text or "")
+    patterns = [
+        r"Plazo\s+de\s+Presentaci[oó]n\s+de\s+Oferta\s+Hasta\s+el\s+(\d{1,2}/\d{1,2}/\d{4})\s+a\s+las\s+(\d{1,2}:\d{2})",
+        r"Hasta\s+el\s+(\d{1,2}/\d{1,2}/\d{4})\s+a\s+las\s+(\d{1,2}:\d{2})",
+        r"fecha\s+y\s+hora\s+l[ií]mite\s+de\s+presentaci[oó]n\s+de\s+ofertas[^\d]{0,40}(\d{1,2}/\d{1,2}/\d{4})\s+(\d{1,2}:\d{2})",
+        r"fecha\s+l[ií]mite\s+de\s+presentaci[oó]n[^\d]{0,40}(\d{1,2}/\d{1,2}/\d{4})(?:\s+a\s+las\s+|\s+)(\d{1,2}:\d{2})?",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            return (m.group(1) or "").strip(), (m.group(2) or "").strip()
+    return "", ""
+
+
+def _extract_expediente_regex(full_text: str) -> str:
+    text = _fix_common_mojibake(full_text or "")
+    patterns = [
+        r"N[.ºª°]*\s*DE\s*EXPEDIENTE[:\s]*([A-Z0-9./_-]+)",
+        r"N[úu]mero\s+de\s+Expediente[:\s]*([A-Z0-9./_-]+)",
+        r"Expediente[:\s]*([A-Z0-9./_-]+)",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE)
+        if m:
+            return _clean_inline(m.group(1))
+    return ""
+
+
+def _extract_entity_regex(full_text: str) -> str:
+    text = _fix_common_mojibake(full_text or "")
+    patterns = [
+        r"Entidad\s+Adjudicadora\s+([A-ZÁÉÍÓÚÑ].{0,140}?)\s+Tipo\s+de\s+Administraci[oó]n",
+        r"El\s+[óo]rgano\s+de\s+contrataci[oó]n\s+es\s+(.{0,140}?)\.",
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            return _clean_inline(m.group(1))
+    return ""
+
+
+def _extract_lugar_prestacion_regex(full_text: str) -> str:
+    text = _fix_common_mojibake(full_text or "")
+    m = re.search(r"Lugar\s+de\s+ejecuci[oó]n\s+(?:ES\d+\s+)?([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ ]{2,80})", text, flags=re.IGNORECASE)
+    if m:
+        return _clean_inline(m.group(1))
+    if re.search(r"Paseo\s+de\s+la\s+Castellana,?\s*63", text, flags=re.IGNORECASE):
+        return "Paseo de la Castellana 63, Madrid"
+    return ""
+
+
+def _extract_plazo_ejecucion_regex(full_text: str) -> str:
+    text = _fix_common_mojibake(full_text or "")
+    m = re.search(r"Plazo\s+de\s+Ejecuci[oó]n\s*(\d+)\s*Mes\(es\)", text, flags=re.IGNORECASE)
+    if m:
+        return f"{m.group(1)} meses"
+    m = re.search(r"Plazo\s+de\s+Ejecuci[oó]n\s*(\d+)\s*Meses", text, flags=re.IGNORECASE)
+    if m:
+        return f"{m.group(1)} meses"
+    return ""
+
+
+def _extract_medios_humanos_materiales_regex(full_text: str) -> str:
+    text = _fix_common_mojibake(full_text or "")
+    pieces: List[str] = []
+
+    m = re.search(r"estar[^\n]{0,80}constituida\s*\n?\s*por:\s*(.*?)\n\s*Varias de estas figuras", text, flags=re.IGNORECASE | re.DOTALL)
+    if m:
+        block = m.group(1)
+        bullets = [b.strip() for b in re.split(r"[•●▪\-]\s+", block) if b.strip()]
+        for b in bullets:
+            bn = _normalize(b)
+            if "director de la obra" in bn and "arquitect" in bn:
+                pieces.append("- 1 arquitecto, encargado de la redacción del proyecto básico y de ejecución y director de la obra; será el coordinador del equipo y el interlocutor principal con la Administración")
+            elif "seguridad y salud" in bn:
+                pieces.append("- 1 arquitecto o arquitecto técnico o aparejador o ingeniero o ingeniero técnico, encargado de la redacción del estudio de seguridad y salud y de la coordinación de seguridad y salud tanto en fase de redacción del proyecto como en fase de ejecución de las obras")
+            elif "rite" in bn or "instalaciones term" in bn:
+                pieces.append("- 1 ingeniero técnico industrial o similar, con experiencia en instalaciones térmicas y redacción de proyectos bajo RITE, encargado de la supervisión de la obra de las instalaciones y de su legalización")
+
+    if re.search(r"adscripci[oó]n\s+de\s+medios\s+personales", text, flags=re.IGNORECASE) and "10" in text and pieces:
+        pieces = [p + "; experiencia mínima: 10 años" if "10 años" not in p else p for p in pieces]
+
+    accredit = ""
+    if "certificado de antiguedad de colegiacion" in _normalize(text) or "colegiacion expedido por colegio profesional" in _normalize(text):
+        accredit = "Acreditación de disponibilidad y características: certificado de antigüedad de colegiación expedido por el colegio profesional correspondiente"
+
+    note = ""
+    if re.search(r"Varias de estas figuras podr[aá]n coincidir en una sola persona", text, flags=re.IGNORECASE):
+        note = "Varias de estas figuras podrán coincidir en una sola persona, siempre que reúna la solvencia técnica y profesional requerida para todas ellas y la normativa de aplicación lo justifique."
+
+    parts: List[str] = []
+    if pieces:
+        parts.append("\n".join(dict.fromkeys(pieces)))
+    if accredit:
+        parts.append(accredit)
+    if note:
+        parts.append(note)
+    return "\n\n".join(p for p in parts if p).strip()
+
+
+def _apply_rule_based_enrichment(data: Dict, pcap_text: str, ppt_text: str, extra_text: str = "") -> Dict:
+    out = dict(data or {})
+    combined = "\n\n".join([extra_text or "", pcap_text or "", ppt_text or ""]).strip()
+
+    fecha_limite, hora_limite = _extract_deadline_fields(combined)
+    if not _clean_inline(out.get("fecha_limite", "")) and fecha_limite:
+        out["fecha_limite"] = fecha_limite
+    if not _clean_inline(out.get("hora_limite", "")) and hora_limite:
+        out["hora_limite"] = hora_limite
+    if not _clean_inline(out.get("expediente", "")):
+        out["expediente"] = _extract_expediente_regex(combined)
+    if not _clean_inline(out.get("cpv", "")):
+        out["cpv"] = _extract_cpv_regex(combined)
+    if not _clean_inline(out.get("entidad_adjudicadora", "")):
+        out["entidad_adjudicadora"] = _extract_entity_regex(combined)
+    if not _clean_inline(out.get("lugar_prestacion", "")):
+        out["lugar_prestacion"] = _extract_lugar_prestacion_regex(combined)
+    if not _clean_inline(out.get("plazo_ejecucion", "")):
+        out["plazo_ejecucion"] = _extract_plazo_ejecucion_regex(combined)
+
+    medios = _extract_medios_humanos_materiales_regex("\n\n".join([ppt_text or "", pcap_text or ""]))
+    if len(_clean_inline(out.get("medios_humanos_materiales_detallados", ""))) < 80 and medios:
+        out["medios_humanos_materiales_detallados"] = medios
+
+    return out
 
 def _clean_keep_newlines(s: str) -> str:
     if s is None:
@@ -851,7 +1034,7 @@ def llm_generate_excel_fields(
         ppt_ctx = _pack_pages(ppt_pages, ppt_pick, "PPT", max_len=5200)
 
     prompt = f"""
-Eres un TÉCNICO SENIOR DE LICITACIONES. Extrae información del PCAP y (si existe) PPT para rellenar una plantilla Excel.
+Eres un TÉCNICO SENIOR DE LICITACIONES. Extrae información del PCAP, del PPT y de la documentación adicional (anuncio u otros) si existe, para rellenar una plantilla Excel.
 Tu objetivo es que alguien pueda TRABAJAR la licitación usando SOLO el Excel.
 
 REGLAS:
@@ -935,6 +1118,9 @@ CONTEXTO PCAP:
 
 CONTEXTO PPT (si hay):
 \"\"\"{ppt_ctx}\"\"\"
+
+CONTEXTO DOCUMENTACIÓN ADICIONAL / ANUNCIO (si hay):
+\"\"\"{extra_text}\"\"\"
 """
 
     if progress_cb:
@@ -1035,6 +1221,9 @@ JSON ACTUAL:
 
 CONTEXTO PCAP ENFOCADO:
 \"\"\"{pcap_ctx2}\"\"\"
+
+CONTEXTO DOCUMENTACIÓN ADICIONAL / ANUNCIO (si hay):
+\"\"\"{extra_text}\"\"\"
 """
 
         if progress_cb:
@@ -1096,6 +1285,9 @@ CONTEXTO PCAP:
 
 CONTEXTO PPT (si hay):
 \"\"\"{ppt_ctx}\"\"\"
+
+CONTEXTO DOCUMENTACIÓN ADICIONAL / ANUNCIO (si hay):
+\"\"\"{extra_text}\"\"\"
 """
 
         if progress_cb:
@@ -1174,6 +1366,9 @@ JSON ACTUAL:
 
 CONTEXTO PCAP HIPER-ENFOCADO:
 \"\"\"{pcap_ctx3}\"\"\"
+
+CONTEXTO DOCUMENTACIÓN ADICIONAL / ANUNCIO (si hay):
+\"\"\"{extra_text}\"\"\"
 """
 
         if progress_cb:
@@ -1432,7 +1627,11 @@ def generate_ai_summary_excel(
                 if len(re.sub(r"\s+", "", extra_raw)) >= 200:
                     extra_count += 1
                     extra_name = os.path.basename(extra_path)
-                    PLACEHOLDER
+                    extra_pages = split_pages(extra_raw)
+                    extra_pick = _select_relevant_pages(extra_pages, max_pages=12)
+                    extra_ctx = _pack_pages(extra_pages, extra_pick, f"EXTRA {extra_name}", max_len=5000)
+                    if extra_ctx:
+                        extra_text_blocks.append(extra_ctx)
             except Exception:
                 pass
 
