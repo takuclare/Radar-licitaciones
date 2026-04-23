@@ -801,7 +801,7 @@ def load_company_corpus(excel_path: str) -> List[str]:
 
 # ---------------- FETCH + FILTROS ----------------
 def fetch_tenders(
-    only_last_days: int = 2,
+    only_last_days: int = 5,
     exclude_deadline_soon_days: int = 2,
     limit_per_feed: int = 2000,
     max_feed_pages: int = 10,

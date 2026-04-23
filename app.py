@@ -34,9 +34,6 @@ LOGO_PATH = os.path.join(ASSETS_DIR, "logo.png")
 LOADING_GIF_PATH = os.path.join(ASSETS_DIR, "barra_carga_avion.gif")
 FONDO_PATH = os.path.join(ASSETS_DIR, "fondo.png")
 
-MAX_UPLOAD_MB = 10
-MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
-
 # ==============================
 # Cache (no cambia funcionalidad; solo evita recomputar en reruns)
 # ==============================
@@ -46,6 +43,9 @@ def cached_company_corpus(excel_path: str):
 
 MAX_LIMIT_FEED = 3000
 MAX_FEED_PAGES = 15
+SEARCH_PUBLICATION_WINDOW_DAYS = 5
+MAX_UPLOAD_FILE_MB = 10
+MAX_UPLOAD_FILE_BYTES = MAX_UPLOAD_FILE_MB * 1024 * 1024
 
 def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool = False, show_all_dates: bool = False):
     # radar_optimized.fetch_tenders no acepta bypass_cache; la decisión de usar
@@ -53,7 +53,7 @@ def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool
     return fetch_tenders(
         limit_per_feed=MAX_LIMIT_FEED,
         max_feed_pages=MAX_FEED_PAGES,
-        only_last_days=2 if not show_all_dates else 36500,
+        only_last_days=SEARCH_PUBLICATION_WINDOW_DAYS if not show_all_dates else 36500,
         exclude_deadline_soon_days=2 if not show_all_dates else 0,
         only_priority_cpvs=False,
         progress_cb=progress_cb,
@@ -127,20 +127,6 @@ def _load_gif_frames_as_data_urls(path: str):
         return []
 
     return frames
-
-def _uploaded_file_too_large(uploaded_file) -> bool:
-    if uploaded_file is None:
-        return False
-    try:
-        return int(getattr(uploaded_file, "size", 0) or 0) > MAX_UPLOAD_BYTES
-    except Exception:
-        return False
-
-def _uploaded_file_size_error(uploaded_file, label: str) -> str:
-    if uploaded_file is None:
-        return ""
-    size_mb = (int(getattr(uploaded_file, "size", 0) or 0) / (1024 * 1024))
-    return f"El archivo '{label}' supera el límite de {MAX_UPLOAD_MB} MB ({size_mb:.2f} MB)."
 
 def _render_plane_progress(container, value: float, text: str = "") -> None:
     value = max(0.0, min(1.0, float(value or 0.0)))
@@ -731,6 +717,16 @@ def _format_date_badge(value: str) -> str:
         return s[:10] if s else ""
     return dt.strftime("%d/%m/%Y")
 
+def _uploaded_file_size_bytes(uploaded_file) -> int:
+    try:
+        return int(getattr(uploaded_file, "size", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _uploaded_file_is_too_large(uploaded_file) -> bool:
+    return uploaded_file is not None and _uploaded_file_size_bytes(uploaded_file) > MAX_UPLOAD_FILE_BYTES
+
 
 def _extract_expediente_from_row(row) -> str:
     candidates = [
@@ -765,7 +761,7 @@ def _summary_status_text(row) -> str:
 def _row_matches_airia_local(row) -> bool:
     now = datetime.now()
     pub = _parse_dt_any(row.get("publicacion", "") or row.get("published", ""))
-    recent_ok = bool(pub and (now - pub).total_seconds() <= 2 * 24 * 3600)
+    recent_ok = bool(pub and (now - pub).total_seconds() <= SEARCH_PUBLICATION_WINDOW_DAYS * 24 * 3600)
 
     deadline = _parse_dt_any(row.get("fecha_limite", "") or row.get("deadline", "") or row.get("plazo", ""))
     deadline_ok = True
@@ -900,7 +896,7 @@ filtered_df["__airia_focus"] = filtered_df.apply(_row_matches_airia_focus, axis=
 filtered_df["__bloqueada_sort"] = filtered_df.get("bloqueada", False).fillna(False).astype(bool)
 if apply_airia_filters:
     filtered_df = filtered_df.sort_values(
-        by=["__bloqueada_sort", "__airia_priority", "__airia_focus", "score", "publicacion"],
+        by=["__bloqueada_sort", "__airia_priority", "publicacion", "__airia_focus", "score"],
         ascending=[True, False, False, False, False],
         na_position="last"
     )
@@ -1071,17 +1067,17 @@ def _tender_modal(tender_id: str, row_dict: dict):
 
         with st.form(key=f"form_{tender_id}", clear_on_submit=False):
             uploaded_pcap = st.file_uploader(
-                f"Sube PCAP (PDF) - obligatorio",
+                "Sube PCAP (PDF) - obligatorio · máx. 10 MB",
                 type=["pdf"],
                 key=f"up_pcap_{tender_id}"
             )
             uploaded_ppt = st.file_uploader(
-                f"Sube PPT (PDF) - opcional",
+                "Sube PPT (PDF) - opcional · máx. 10 MB",
                 type=["pdf"],
                 key=f"up_ppt_{tender_id}"
             )
             uploaded_extra = st.file_uploader(
-                f"Sube Anuncio u otros (PDF) - opcional",
+                "Sube Anuncio u otros (PDF) - opcional · máx. 10 MB",
                 type=["pdf"],
                 key=f"up_extra_{tender_id}"
             )
@@ -1089,18 +1085,20 @@ def _tender_modal(tender_id: str, row_dict: dict):
         ai_progress_ph = st.empty()
 
         if submitted:
-            upload_errors = []
-            if uploaded_pcap is None:
-                upload_errors.append("Debes subir el PCAP (obligatorio).")
-            if _uploaded_file_too_large(uploaded_pcap):
-                upload_errors.append(_uploaded_file_size_error(uploaded_pcap, uploaded_pcap.name))
-            if _uploaded_file_too_large(uploaded_ppt):
-                upload_errors.append(_uploaded_file_size_error(uploaded_ppt, uploaded_ppt.name))
-            if _uploaded_file_too_large(uploaded_extra):
-                upload_errors.append(_uploaded_file_size_error(uploaded_extra, uploaded_extra.name))
+            oversized_files = []
+            for label, uploaded_file in (("PCAP", uploaded_pcap), ("PPT", uploaded_ppt), ("Anuncio u otros", uploaded_extra)):
+                if _uploaded_file_is_too_large(uploaded_file):
+                    size_mb = _uploaded_file_size_bytes(uploaded_file) / (1024 * 1024)
+                    oversized_files.append(f"{label}: {size_mb:.2f} MB")
 
-            if upload_errors:
-                st.session_state[status_key] = "⚠️ " + " ".join(upload_errors)
+            if uploaded_pcap is None:
+                st.session_state[status_key] = "⚠️ Debes subir el PCAP (obligatorio)."
+                status_box.warning(st.session_state[status_key])
+            elif oversized_files:
+                st.session_state[status_key] = (
+                    f"⚠️ Cada archivo puede pesar como máximo {MAX_UPLOAD_FILE_MB} MB. "
+                    f"Revisa: {', '.join(oversized_files)}"
+                )
                 status_box.warning(st.session_state[status_key])
             else:
                 pcap_name = _safe_filename(uploaded_pcap.name, "PCAP.pdf")
