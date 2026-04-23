@@ -801,8 +801,8 @@ def load_company_corpus(excel_path: str) -> List[str]:
 
 # ---------------- FETCH + FILTROS ----------------
 def fetch_tenders(
-    only_last_days: int = 4,
-    exclude_deadline_soon_days: int = 0,
+    only_last_days: int = 2,
+    exclude_deadline_soon_days: int = 2,
     limit_per_feed: int = 2000,
     max_feed_pages: int = 10,
     max_workers: int = 12,
@@ -901,15 +901,20 @@ def fetch_tenders(
             is_madrid = (feed_url == _FEED_1044) and _is_madrid_tender(link)
             issue_d = issue_date_map.get(_normalize_madrid_link_key(link)) if is_madrid else None
             if apply_airia_filters and is_madrid:
-                # Seguimos usando IssueDate para tener la fecha correcta de Madrid,
-                # pero ya no excluimos por antigüedad aquí: ahora solo reordenamos.
-                pass
+                # Para Madrid, el filtrado SIEMPRE debe basarse en cbc:IssueDate del ATOM.
+                # Si no podemos resolverlo, preferimos excluir la entrada antes que colarla con una fecha errónea.
+                if not issue_d:
+                    continue
+                today = _today_madrid()
+                if abs((issue_d - today).days) > 1:
+                    continue
 
             is_andalucia = (feed_url == _FEED_1044) and _is_andalucia_tender(link)
             andalucia_end_d = andalucia_end_date_map.get(_normalize_andalucia_link_key(link)) if is_andalucia else None
             if apply_airia_filters and is_andalucia and andalucia_end_d:
-                # Conservamos EndDate para ordenar después, pero no excluimos por caducidad aquí.
-                pass
+                andalucia_end_dt = datetime(andalucia_end_d.year, andalucia_end_d.month, andalucia_end_d.day)
+                if andalucia_end_dt < (now + timedelta(days=exclude_deadline_soon_days)):
+                    continue
 
             published_raw = getattr(e, "published", "") or getattr(e, "updated", "") or ""
             updated_raw = getattr(e, "updated", "") or published_raw
@@ -921,6 +926,9 @@ def fetch_tenders(
                 feed_published_dt = _to_naive_utc(_parse_atom_date(published_raw))
 
             feed_updated_dt = _to_naive_utc(_parse_atom_date(updated_raw))
+
+            if apply_airia_filters and feed_published_dt and min_date and feed_published_dt < min_date:
+                continue
 
             deadline_dt = _to_naive_utc(_extract_deadline_from_text(summary))
             if apply_airia_filters and is_andalucia and andalucia_end_d:
@@ -1020,10 +1028,19 @@ def fetch_tenders(
         include = True
         is_csp = _is_csp_host(link)
         if apply_airia_filters and is_csp:
-            # Seguimos resolviendo el estado CSP para poder ordenar mejor,
-            # pero no excluimos por estado/fecha/caducidad: ahora todo se muestra y se ordena.
             verdict = _csp_status_is_publicada(portal_status) if reviewed_deep else None
-            _ = verdict  # mantenemos la resolución para depuración futura
+            if verdict is False:
+                include = False
+            elif verdict is None and _csp_failsafe_exclude_by_text(title, summary):
+                include = False
+
+        if apply_airia_filters and include and published_dt and min_date and published_dt < min_date:
+            include = False
+        if apply_airia_filters and include and deadline_dt and deadline_dt < now:
+            include = False
+        if apply_airia_filters and include and deadline_dt and exclude_deadline_soon_days is not None:
+            if deadline_dt < (now + timedelta(days=exclude_deadline_soon_days)):
+                include = False
 
         if include:
             detected_valid += 1

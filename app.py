@@ -44,18 +44,19 @@ def cached_company_corpus(excel_path: str):
 MAX_LIMIT_FEED = 3000
 MAX_FEED_PAGES = 15
 
-def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool = False):
-    # radar_optimized.fetch_tenders no acepta bypass_cache.
-    # La decisión de usar o no la precarga externa se toma en app.py.
+def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool = False, show_all_dates: bool = False):
+    # radar_optimized.fetch_tenders no acepta bypass_cache; la decisión de usar
+    # o no la precarga remota se toma desde app.py.
     return fetch_tenders(
         limit_per_feed=MAX_LIMIT_FEED,
         max_feed_pages=MAX_FEED_PAGES,
-        only_last_days=4,
-        exclude_deadline_soon_days=0,
+        only_last_days=2 if not show_all_dates else 36500,
+        exclude_deadline_soon_days=2 if not show_all_dates else 0,
         only_priority_cpvs=False,
         progress_cb=progress_cb,
         pre_rank_corpus=company_corpus,
         deep_review_top_n=30,
+        apply_airia_filters=not show_all_dates,
     )
 
 # ==============================
@@ -65,8 +66,6 @@ def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool
 REMOTE_SNAPSHOT_URL_ALL = os.getenv("REMOTE_SNAPSHOT_URL_ALL", "").strip()
 REMOTE_SNAPSHOT_URL_CPV = os.getenv("REMOTE_SNAPSHOT_URL_CPV", "").strip()
 REMOTE_SNAPSHOT_MAX_AGE_MIN = int(os.getenv("REMOTE_SNAPSHOT_MAX_AGE_MIN", "20") or 20)
-RECENT_WINDOW_DAYS = 4
-SNAPSHOT_LOGIC_VERSION_REQUIRED = "soft_sort_4d_v1"
 
 @st.cache_data(show_spinner=False, ttl=120)
 def _load_remote_snapshot(url: str):
@@ -97,27 +96,6 @@ def _snapshot_to_df(snapshot: dict) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows)
-
-def _snapshot_matches_current_logic(snapshot: dict) -> bool:
-    if not snapshot:
-        return False
-    try:
-        snap_days = int(snapshot.get("only_last_days", 0) or 0)
-    except Exception:
-        snap_days = 0
-    try:
-        snap_exclude = int(snapshot.get("exclude_deadline_soon_days", -1) or -1)
-    except Exception:
-        snap_exclude = -1
-    snap_logic = str(snapshot.get("snapshot_logic_version", "") or "").strip()
-    if snap_days != RECENT_WINDOW_DAYS:
-        return False
-    if snap_exclude != 0:
-        return False
-    if snap_logic != SNAPSHOT_LOGIC_VERSION_REQUIRED:
-        return False
-    return True
-
 
 # ==============================
 # UI helpers
@@ -420,6 +398,9 @@ if "msg_err" not in st.session_state:
 if "company_corpus_len" not in st.session_state:
     st.session_state.company_corpus_len = 0
 
+if "show_all_dates_last" not in st.session_state:
+    st.session_state.show_all_dates_last = None
+
 # ==============================
 # Sidebar: logo arriba + búsqueda/filtros
 # ==============================
@@ -435,7 +416,12 @@ with st.sidebar:
         value=False,
         help="Si la marcas, no se usará la precarga de GitHub y se lanzará una búsqueda completa en vivo. Puede tardar hasta unos 20 minutos.",
     )
-    apply_airia_filters = True
+    show_all_dates = st.checkbox(
+        "Mostrar todas independientemente de la fecha",
+        value=False,
+        help="Si la marcas, se mostrarán licitaciones sin el filtro temporal de 2 días.",
+    )
+    apply_airia_filters = not show_all_dates
 
     run = st.button("🔄 Buscar licitaciones", use_container_width=True)
     search_progress_ph = st.empty()
@@ -504,6 +490,10 @@ st.markdown(
 if run:
     st.session_state.msg_ok = ""
     st.session_state.msg_err = ""
+    if st.session_state.get("show_all_dates_last") != show_all_dates:
+        st.session_state.df = None
+        st.session_state.tenders_count = 0
+    st.session_state.show_all_dates_last = show_all_dates
     # Al relanzar la búsqueda, cerramos cualquier modal abierto para evitar
     # que se reabra automáticamente al terminar el rerun.
     st.session_state.active_tender = None
@@ -535,13 +525,13 @@ if run:
         used_remote_snapshot = False
         remote_error = None
 
-        if not bypass_cache:
+        if not bypass_cache and not show_all_dates:
             selected_snapshot_url = REMOTE_SNAPSHOT_URL_ALL
             if selected_snapshot_url:
                 try:
                     p.progress(0.20, text="Consultando precarga externa…")
                     snapshot = _load_remote_snapshot(selected_snapshot_url)
-                    if snapshot and _snapshot_is_fresh(snapshot, REMOTE_SNAPSHOT_MAX_AGE_MIN) and _snapshot_matches_current_logic(snapshot):
+                    if snapshot and _snapshot_is_fresh(snapshot, REMOTE_SNAPSHOT_MAX_AGE_MIN):
                         df_remote = _snapshot_to_df(snapshot)
                         if not df_remote.empty:
                             total_detected = int(snapshot.get("detected_count", len(df_remote)) or len(df_remote))
@@ -590,7 +580,12 @@ if run:
                         cache_hits=int(meta.get('cache_hits', 0) or 0),
                     )
 
-                tenders = live_fetch_tenders(company_corpus=company_corpus, progress_cb=_cb, bypass_cache=True)
+                tenders = live_fetch_tenders(
+                    company_corpus=company_corpus,
+                    progress_cb=_cb,
+                    bypass_cache=True,
+                    show_all_dates=show_all_dates,
+                )
 
             st.session_state.tenders_count = len(tenders)
 
@@ -761,29 +756,24 @@ def _summary_status_text(row) -> str:
     return " ".join(text_parts).lower()
 
 
-def _is_recent_publication(row) -> bool:
+def _row_matches_airia_local(row) -> bool:
     now = datetime.now()
     pub = _parse_dt_any(row.get("publicacion", "") or row.get("published", ""))
-    return bool(pub and (now - pub).total_seconds() <= RECENT_WINDOW_DAYS * 24 * 3600)
+    recent_ok = bool(pub and (now - pub).total_seconds() <= 2 * 24 * 3600)
 
-def _has_active_deadline(row) -> bool:
-    now = datetime.now()
     deadline = _parse_dt_any(row.get("fecha_limite", "") or row.get("deadline", "") or row.get("plazo", ""))
-    if deadline is None:
-        return True
-    return deadline >= now
+    deadline_ok = True
+    if deadline is not None:
+        deadline_ok = deadline >= now
 
-def _has_good_status(row) -> bool:
     status_text = _summary_status_text(row)
     bad_markers = [
         "estado: ev", "estado: res", "estado: adj", "estado: formal", "estado: anul", "estado: desiert",
         "en evaluación", "en evaluacion", "resuelta", "adjudicada", "adjudicado", "formalizada",
         "pendiente de adjudicación", "pendiente de adjudicacion", "evaluación", "evaluacion"
     ]
-    return not any(marker in status_text for marker in bad_markers)
-
-def _row_matches_airia_local(row) -> bool:
-    return _is_recent_publication(row) and _has_active_deadline(row) and _has_good_status(row) and _row_matches_airia_focus(row)
+    status_ok = not any(marker in status_text for marker in bad_markers)
+    return recent_ok and deadline_ok and status_ok and _row_matches_airia_focus(row)
 
 
 def _normalize_official_link(link: str) -> str:
@@ -864,7 +854,14 @@ with st.sidebar:
             key = f"platform_filter_{hashlib.md5(label.encode('utf-8')).hexdigest()[:10]}"
             if st.checkbox(label, value=True, key=key):
                 selected_platform_labels.append(label)
-    selected_keywords = keyword_options[:]
+
+    with st.expander("Palabras clave detectadas", expanded=False):
+        st.caption("Todas vienen seleccionadas por defecto.")
+        selected_keywords = []
+        for kw in keyword_options:
+            key = f"keyword_filter_{hashlib.md5(kw.encode('utf-8')).hexdigest()[:10]}"
+            if st.checkbox(kw, value=True, key=key):
+                selected_keywords.append(kw)
 
 current_filters_signature = json.dumps({
     "text_query": (text_query or "").strip().lower(),
@@ -925,27 +922,45 @@ if selected_platform_labels:
         filtered_df = filtered_df[filtered_df["__platform_label"].isin(selected_platform_labels)]
 else:
     filtered_df = filtered_df.iloc[0:0]
-filtered_df["__airia_recent"] = filtered_df.apply(_is_recent_publication, axis=1)
-filtered_df["__airia_deadline_ok"] = filtered_df.apply(_has_active_deadline, axis=1)
-filtered_df["__airia_status_ok"] = filtered_df.apply(_has_good_status, axis=1)
+all_keywords_selected = len(selected_keywords) == len(keyword_options)
+if keyword_options:
+    if selected_keywords:
+        if not all_keywords_selected:
+            selected_keywords_norm = {k.lower() for k in selected_keywords}
+            deselected_keywords_norm = {k.lower() for k in keyword_options if k.lower() not in selected_keywords_norm}
+            only_one_keyword_selected = len(selected_keywords_norm) == 1
+
+            def _row_passes_keyword_filter(row):
+                row_keywords = {str(k).strip().lower() for k in _extract_detected_keywords(row) if str(k).strip()}
+                if not row_keywords:
+                    return not only_one_keyword_selected
+
+                has_selected = any(k in selected_keywords_norm for k in row_keywords)
+                has_deselected = any(k in deselected_keywords_norm for k in row_keywords)
+
+                if only_one_keyword_selected:
+                    return has_selected and not has_deselected
+
+                return not has_deselected
+
+            filtered_df = filtered_df[
+                filtered_df.apply(_row_passes_keyword_filter, axis=1)
+            ]
+    else:
+        filtered_df = filtered_df.iloc[0:0]
+
+filtered_df["__airia_priority"] = (
+    filtered_df.apply(_row_matches_airia_local, axis=1) if apply_airia_filters else False
+)
 filtered_df["__airia_focus"] = filtered_df.apply(_row_matches_airia_focus, axis=1)
 filtered_df["__bloqueada_sort"] = filtered_df.get("bloqueada", False).fillna(False).astype(bool)
-
-def _group_rank(row):
-    if (not bool(row.get("__bloqueada_sort", False))) and bool(row.get("__airia_focus", False)) and bool(row.get("__airia_recent", False)) and bool(row.get("__airia_deadline_ok", False)) and bool(row.get("__airia_status_ok", False)):
-        return 0
-    if (not bool(row.get("__bloqueada_sort", False))) and bool(row.get("__airia_focus", False)):
-        return 1
-    return 2
-
-filtered_df["__group_rank"] = filtered_df.apply(_group_rank, axis=1)
-
-filtered_df = filtered_df.sort_values(
-    by=["__group_rank", "__bloqueada_sort", "__airia_focus", "__airia_deadline_ok", "__airia_recent", "score", "publicacion"],
-    ascending=[True, True, False, False, False, False, False],
-    na_position="last"
-)
-filtered_df = filtered_df.drop(columns=["__bloqueada_sort", "__group_rank"], errors="ignore")
+if apply_airia_filters:
+    filtered_df = filtered_df.sort_values(
+        by=["__bloqueada_sort", "__airia_priority", "__airia_focus", "score", "publicacion"],
+        ascending=[True, False, False, False, False],
+        na_position="last"
+    )
+filtered_df = filtered_df.drop(columns=["__bloqueada_sort"], errors="ignore")
 filtered_df = filtered_df.drop(columns=["__amount_num", "__domain", "__platform_label"], errors="ignore").reset_index(drop=True)
 st.session_state.filtered_count = len(filtered_df)
 
