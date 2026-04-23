@@ -879,6 +879,7 @@ REGLAS:
    - Si piden experiencia mínima de un perfil, inclúyela en la misma línea del perfil.
    - El resto de información que no sea un perfil obligatorio debe ir en texto normal SIN guiones, en párrafos separados.
    - Si el pliego indica EXPRESAMENTE la titulación/profesión que puede cumplir cada función/perfil, indícalo entre paréntesis.
+   - Los perfiles a adscribir en el contrato según venga indicado en el pliego, importante que no solo digas lo que necesitan, sino que el perfil debes decirme (solo si el pliego lo indica) que profesión es valida para cumplir con ese perfil.  los obligatorios, nada de darme los criterios obligatorios, y si hay algun perfil extra opcional me dices opcional: tal tal tal, me darás los perfiles con guiones y saltos de linea cada uno, importante que me indiques la cantidad de perfiles en numero, ejemplo: 3 arquitectos, 1 arquitecto, o lo que sea
 
 8) CRITERIOS DE ADJUDICACIÓN:
    - Revísalos de forma exhaustiva en TODAS las partes del pliego donde aparezcan: cuadro resumen, PCAP, PPT, anexos citados dentro del texto extraído, tablas y apartados de fórmulas.
