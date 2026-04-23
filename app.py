@@ -45,6 +45,8 @@ MAX_LIMIT_FEED = 3000
 MAX_FEED_PAGES = 15
 
 def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool = False):
+    # radar_optimized.fetch_tenders no acepta bypass_cache.
+    # La decisión de usar o no la precarga externa se toma en app.py.
     return fetch_tenders(
         limit_per_feed=MAX_LIMIT_FEED,
         max_feed_pages=MAX_FEED_PAGES,
@@ -54,7 +56,6 @@ def live_fetch_tenders(company_corpus=None, progress_cb=None, bypass_cache: bool
         progress_cb=progress_cb,
         pre_rank_corpus=company_corpus,
         deep_review_top_n=30,
-        bypass_cache=bypass_cache,
     )
 
 # ==============================
