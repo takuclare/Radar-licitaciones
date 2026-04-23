@@ -34,6 +34,9 @@ LOGO_PATH = os.path.join(ASSETS_DIR, "logo.png")
 LOADING_GIF_PATH = os.path.join(ASSETS_DIR, "barra_carga_avion.gif")
 FONDO_PATH = os.path.join(ASSETS_DIR, "fondo.png")
 
+MAX_UPLOAD_MB = 10
+MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
+
 # ==============================
 # Cache (no cambia funcionalidad; solo evita recomputar en reruns)
 # ==============================
@@ -124,6 +127,20 @@ def _load_gif_frames_as_data_urls(path: str):
         return []
 
     return frames
+
+def _uploaded_file_too_large(uploaded_file) -> bool:
+    if uploaded_file is None:
+        return False
+    try:
+        return int(getattr(uploaded_file, "size", 0) or 0) > MAX_UPLOAD_BYTES
+    except Exception:
+        return False
+
+def _uploaded_file_size_error(uploaded_file, label: str) -> str:
+    if uploaded_file is None:
+        return ""
+    size_mb = (int(getattr(uploaded_file, "size", 0) or 0) / (1024 * 1024))
+    return f"El archivo '{label}' supera el límite de {MAX_UPLOAD_MB} MB ({size_mb:.2f} MB)."
 
 def _render_plane_progress(container, value: float, text: str = "") -> None:
     value = max(0.0, min(1.0, float(value or 0.0)))
@@ -1054,17 +1071,17 @@ def _tender_modal(tender_id: str, row_dict: dict):
 
         with st.form(key=f"form_{tender_id}", clear_on_submit=False):
             uploaded_pcap = st.file_uploader(
-                "Sube PCAP (PDF) - obligatorio",
+                f"Sube PCAP (PDF) - obligatorio · máx. {MAX_UPLOAD_MB} MB",
                 type=["pdf"],
                 key=f"up_pcap_{tender_id}"
             )
             uploaded_ppt = st.file_uploader(
-                "Sube PPT (PDF) - opcional",
+                f"Sube PPT (PDF) - opcional · máx. {MAX_UPLOAD_MB} MB",
                 type=["pdf"],
                 key=f"up_ppt_{tender_id}"
             )
             uploaded_extra = st.file_uploader(
-                "Sube Anuncio u otros (PDF) - opcional",
+                f"Sube Anuncio u otros (PDF) - opcional · máx. {MAX_UPLOAD_MB} MB",
                 type=["pdf"],
                 key=f"up_extra_{tender_id}"
             )
@@ -1072,8 +1089,18 @@ def _tender_modal(tender_id: str, row_dict: dict):
         ai_progress_ph = st.empty()
 
         if submitted:
+            upload_errors = []
             if uploaded_pcap is None:
-                st.session_state[status_key] = "⚠️ Debes subir el PCAP (obligatorio)."
+                upload_errors.append("Debes subir el PCAP (obligatorio).")
+            if _uploaded_file_too_large(uploaded_pcap):
+                upload_errors.append(_uploaded_file_size_error(uploaded_pcap, uploaded_pcap.name))
+            if _uploaded_file_too_large(uploaded_ppt):
+                upload_errors.append(_uploaded_file_size_error(uploaded_ppt, uploaded_ppt.name))
+            if _uploaded_file_too_large(uploaded_extra):
+                upload_errors.append(_uploaded_file_size_error(uploaded_extra, uploaded_extra.name))
+
+            if upload_errors:
+                st.session_state[status_key] = "⚠️ " + " ".join(upload_errors)
                 status_box.warning(st.session_state[status_key])
             else:
                 pcap_name = _safe_filename(uploaded_pcap.name, "PCAP.pdf")
