@@ -400,6 +400,12 @@ if "msg_err" not in st.session_state:
     st.session_state.msg_err = ""
 if "company_corpus_len" not in st.session_state:
     st.session_state.company_corpus_len = 0
+if "manual_summary_modal_open" not in st.session_state:
+    st.session_state.manual_summary_modal_open = False
+if "manual_summary_xlsx" not in st.session_state:
+    st.session_state.manual_summary_xlsx = None
+if "manual_summary_status" not in st.session_state:
+    st.session_state.manual_summary_status = ""
 
 # ==============================
 # Sidebar: logo arriba + búsqueda/filtros
@@ -489,6 +495,7 @@ if run:
     # Al relanzar la búsqueda, cerramos cualquier modal abierto para evitar
     # que se reabra automáticamente al terminar el rerun.
     st.session_state.active_tender = None
+    st.session_state.manual_summary_modal_open = False
 
     progress_title_ph = st.empty()
     p = _GifProgressBar(search_progress_ph, 0, text="Preparando búsqueda…")
@@ -831,6 +838,12 @@ with st.sidebar:
             if st.checkbox(label, value=True, key=key):
                 selected_platform_labels.append(label)
 
+    st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
+    if st.button("🧠 Resumen IA", key="open_manual_summary_modal", use_container_width=True):
+        st.session_state.manual_summary_modal_open = True
+        st.session_state.manual_summary_status = ""
+        st.session_state.manual_summary_xlsx = None
+
 current_filters_signature = json.dumps({
     "text_query": (text_query or "").strip().lower(),
     "amount_min_raw": (amount_min_raw or "").strip(),
@@ -843,6 +856,7 @@ if previous_filters_signature is None:
 elif previous_filters_signature != current_filters_signature:
     st.session_state["filters_signature"] = current_filters_signature
     st.session_state.active_tender = None
+    st.session_state.manual_summary_modal_open = False
 
 filtered_df = df.copy()
 if text_query:
@@ -951,6 +965,13 @@ def _open_tender_modal(tid: str) -> None:
 
 def _close_tender_modal() -> None:
     st.session_state.active_tender = None
+    st.session_state.manual_summary_modal_open = False
+
+def _open_manual_summary_modal() -> None:
+    st.session_state.manual_summary_modal_open = True
+
+def _close_manual_summary_modal() -> None:
+    st.session_state.manual_summary_modal_open = False
 
 # Mapa rápido tender_id -> row (dict) para poder abrir modal sin depender del loop
 _tender_map = {}
@@ -1189,6 +1210,144 @@ def _tender_modal(tender_id: str, row_dict: dict):
         st.rerun()
     st.markdown("</div>", unsafe_allow_html=True)
 
+@dialog_decorator("Resumen IA")
+def _manual_summary_modal():
+    status_box = st.empty()
+    if st.session_state.get("manual_summary_status"):
+        status_box.info(st.session_state["manual_summary_status"])
+
+    st.markdown("<div class='modal-section'><h4>Documentación manual</h4>", unsafe_allow_html=True)
+    st.caption("Sube pliegos o documentación de una licitación que ya tengáis para generar el Excel resumen sin necesidad de buscarla antes en el radar.")
+
+    with st.form(key="manual_summary_form", clear_on_submit=False):
+        manual_title = st.text_input("Título de la licitación", placeholder="Escribe un título identificativo")
+        manual_link = st.text_input("Enlace del expediente - opcional", placeholder="https://...")
+        uploaded_pcap = st.file_uploader(
+            "Sube PCAP (PDF) - obligatorio",
+            type=["pdf"],
+            key="manual_summary_pcap"
+        )
+        uploaded_ppt = st.file_uploader(
+            "Sube PPT (PDF) - opcional",
+            type=["pdf"],
+            key="manual_summary_ppt"
+        )
+        uploaded_extra = st.file_uploader(
+            "Sube Anuncio u otros (PDF) - opcional",
+            type=["pdf"],
+            key="manual_summary_extra"
+        )
+        submitted = st.form_submit_button("🧠 Generar Excel Resumen IA")
+
+    ai_progress_ph = st.empty()
+
+    if submitted:
+        oversized_files = []
+        for label, uploaded_file in (("PCAP", uploaded_pcap), ("PPT", uploaded_ppt), ("Anuncio u otros", uploaded_extra)):
+            if _uploaded_file_is_too_large(uploaded_file):
+                size_mb = _uploaded_file_size_bytes(uploaded_file) / (1024 * 1024)
+                oversized_files.append(f"{label}: {size_mb:.2f} MB")
+
+        if uploaded_pcap is None:
+            st.session_state.manual_summary_status = "⚠️ Debes subir el PCAP (obligatorio)."
+            status_box.warning(st.session_state.manual_summary_status)
+        elif oversized_files:
+            st.session_state.manual_summary_status = (
+                f"⚠️ Cada archivo puede pesar como máximo {MAX_UPLOAD_FILE_MB} MB. "
+                f"Revisa: {', '.join(oversized_files)}"
+            )
+            status_box.warning(st.session_state.manual_summary_status)
+        else:
+            manual_id_base = f"manual|{manual_title or ''}|{uploaded_pcap.name or ''}|{datetime.now().isoformat()}"
+            manual_tender_id = hashlib.md5(manual_id_base.encode("utf-8")).hexdigest()
+
+            pcap_name = _safe_filename(uploaded_pcap.name, "PCAP.pdf")
+            pcap_path = os.path.join(cache_folder, f"manual_sidebar_{manual_tender_id}_PCAP_{pcap_name}")
+            with open(pcap_path, "wb") as f:
+                f.write(uploaded_pcap.getbuffer())
+
+            ppt_path = None
+            if uploaded_ppt is not None:
+                ppt_name = _safe_filename(uploaded_ppt.name, "PPT.pdf")
+                ppt_path = os.path.join(cache_folder, f"manual_sidebar_{manual_tender_id}_PPT_{ppt_name}")
+                with open(ppt_path, "wb") as f:
+                    f.write(uploaded_ppt.getbuffer())
+
+            extra_paths = []
+            if uploaded_extra is not None:
+                extra_name = _safe_filename(uploaded_extra.name, "ANUNCIO_OTROS.pdf")
+                extra_path = os.path.join(cache_folder, f"manual_sidebar_{manual_tender_id}_EXTRA_{extra_name}")
+                with open(extra_path, "wb") as f:
+                    f.write(uploaded_extra.getbuffer())
+                extra_paths.append(extra_path)
+
+            try:
+                pb = _GifProgressBar(ai_progress_ph, 0, text="Preparando…")
+
+                def _ai_cb(frac: float, msg: str):
+                    try:
+                        pb.progress(max(0.0, min(1.0, float(frac))), text=msg)
+                    except Exception:
+                        pass
+
+                tender_title_manual = (manual_title or "Licitación manual").strip() or "Licitación manual"
+                tender_link_manual = (manual_link or "").strip()
+
+                with status_box.status("🤖 Generando Excel Resumen IA…", expanded=True) as s:
+                    s.update(label="Paso 1/3: leyendo pliegos…", state="running")
+                    pb.progress(0.05, text="Leyendo pliegos…")
+                    s.update(label="Paso 2/3: llamando a IA…", state="running")
+                    pb.progress(0.30, text="Llamando a IA…")
+
+                    out_xlsx, info = generate_ai_summary_excel(
+                        tender_title=tender_title_manual,
+                        tender_link=tender_link_manual,
+                        template_folder=template_folder,
+                        cache_folder=cache_folder,
+                        out_folder=out_folder,
+                        manual_pcap_path=pcap_path,
+                        manual_ppt_path=ppt_path,
+                        manual_extra_paths=extra_paths,
+                        progress_cb=_ai_cb
+                    )
+
+                    s.update(label="Paso 3/3: Excel generado ✅", state="complete")
+                    pb.progress(1.0, text="Excel generado ✅")
+
+                st.session_state.manual_summary_xlsx = out_xlsx
+                st.session_state.manual_summary_status = "✅ Excel Resumen IA generado. Descárgalo abajo."
+                status_box.info(st.session_state.manual_summary_status)
+                st.caption(info)
+
+            except Exception as e:
+                st.session_state.manual_summary_xlsx = None
+                st.session_state.manual_summary_status = f"❌ Error: {e}"
+                try:
+                    ai_progress_ph.empty()
+                except Exception:
+                    pass
+                status_box.error(st.session_state.manual_summary_status)
+
+    xlsx_path = st.session_state.get("manual_summary_xlsx")
+    if xlsx_path and os.path.exists(xlsx_path):
+        with open(xlsx_path, "rb") as f:
+            st.download_button(
+                "⬇️ Descargar Excel Resumen IA",
+                data=f,
+                file_name=os.path.basename(xlsx_path),
+                key="dl_excel_manual_summary",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("<div class='tender-divider'></div>", unsafe_allow_html=True)
+    st.markdown("<div class='close-btn'>", unsafe_allow_html=True)
+    if st.button("Cerrar", key="close_manual_summary", use_container_width=True):
+        _close_manual_summary_modal()
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+
 # Feed de licitaciones
 if filtered_df.empty:
     st.info("No hay licitaciones que cumplan los filtros actuales.")
@@ -1273,6 +1432,9 @@ else:
     st.markdown("</div>", unsafe_allow_html=True)
 
 # Abrir modal si hay uno seleccionado
+
+if st.session_state.get("manual_summary_modal_open"):
+    _manual_summary_modal()
 
 _active = st.session_state.get("active_tender")
 if _active and _active in _tender_map:
