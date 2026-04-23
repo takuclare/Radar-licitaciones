@@ -398,9 +398,6 @@ if "msg_err" not in st.session_state:
 if "company_corpus_len" not in st.session_state:
     st.session_state.company_corpus_len = 0
 
-if "show_all_dates_last" not in st.session_state:
-    st.session_state.show_all_dates_last = None
-
 # ==============================
 # Sidebar: logo arriba + búsqueda/filtros
 # ==============================
@@ -416,12 +413,8 @@ with st.sidebar:
         value=False,
         help="Si la marcas, no se usará la precarga de GitHub y se lanzará una búsqueda completa en vivo. Puede tardar hasta unos 20 minutos.",
     )
-    show_all_dates = st.checkbox(
-        "Mostrar todas independientemente de la fecha",
-        value=False,
-        help="Si la marcas, se mostrarán licitaciones sin el filtro temporal de 2 días.",
-    )
-    apply_airia_filters = not show_all_dates
+    show_all_dates = False
+    apply_airia_filters = True
 
     run = st.button("🔄 Buscar licitaciones", use_container_width=True)
     search_progress_ph = st.empty()
@@ -490,10 +483,6 @@ st.markdown(
 if run:
     st.session_state.msg_ok = ""
     st.session_state.msg_err = ""
-    if st.session_state.get("show_all_dates_last") != show_all_dates:
-        st.session_state.df = None
-        st.session_state.tenders_count = 0
-    st.session_state.show_all_dates_last = show_all_dates
     # Al relanzar la búsqueda, cerramos cualquier modal abierto para evitar
     # que se reabra automáticamente al terminar el rerun.
     st.session_state.active_tender = None
@@ -793,32 +782,6 @@ for domain in sorted([d for d in df["__domain"].dropna().unique().tolist() if d]
         platform_options.append((label, domain))
         seen_labels.add(label)
 
-def _extract_detected_keywords(row):
-    values = []
-    for col in ["boost_keywords", "super_keywords", "keywords", "keyword_hits"]:
-        raw = row.get(col, "")
-        if raw is None:
-            continue
-        if isinstance(raw, (list, tuple, set)):
-            parts = list(raw)
-        else:
-            parts = re.split(r"[,;|]", str(raw))
-        for part in parts:
-            kw = str(part).strip()
-            if kw:
-                values.append(kw)
-    return values
-
-keyword_options = []
-seen_keywords = set()
-for _, row in df.iterrows():
-    for kw in _extract_detected_keywords(row):
-        key_norm = kw.lower()
-        if key_norm not in seen_keywords:
-            keyword_options.append(kw)
-            seen_keywords.add(key_norm)
-keyword_options = sorted(keyword_options, key=lambda x: x.lower())
-
 with st.sidebar:
     st.markdown("---")
     st.subheader("Filtros")
@@ -855,20 +818,11 @@ with st.sidebar:
             if st.checkbox(label, value=True, key=key):
                 selected_platform_labels.append(label)
 
-    with st.expander("Palabras clave detectadas", expanded=False):
-        st.caption("Todas vienen seleccionadas por defecto.")
-        selected_keywords = []
-        for kw in keyword_options:
-            key = f"keyword_filter_{hashlib.md5(kw.encode('utf-8')).hexdigest()[:10]}"
-            if st.checkbox(kw, value=True, key=key):
-                selected_keywords.append(kw)
-
 current_filters_signature = json.dumps({
     "text_query": (text_query or "").strip().lower(),
     "amount_min_raw": (amount_min_raw or "").strip(),
     "amount_max_raw": (amount_max_raw or "").strip(),
     "platforms": sorted(selected_platform_labels),
-    "keywords": sorted(selected_keywords),
 }, ensure_ascii=False, sort_keys=True)
 previous_filters_signature = st.session_state.get("filters_signature")
 if previous_filters_signature is None:
@@ -922,33 +876,6 @@ if selected_platform_labels:
         filtered_df = filtered_df[filtered_df["__platform_label"].isin(selected_platform_labels)]
 else:
     filtered_df = filtered_df.iloc[0:0]
-all_keywords_selected = len(selected_keywords) == len(keyword_options)
-if keyword_options:
-    if selected_keywords:
-        if not all_keywords_selected:
-            selected_keywords_norm = {k.lower() for k in selected_keywords}
-            deselected_keywords_norm = {k.lower() for k in keyword_options if k.lower() not in selected_keywords_norm}
-            only_one_keyword_selected = len(selected_keywords_norm) == 1
-
-            def _row_passes_keyword_filter(row):
-                row_keywords = {str(k).strip().lower() for k in _extract_detected_keywords(row) if str(k).strip()}
-                if not row_keywords:
-                    return not only_one_keyword_selected
-
-                has_selected = any(k in selected_keywords_norm for k in row_keywords)
-                has_deselected = any(k in deselected_keywords_norm for k in row_keywords)
-
-                if only_one_keyword_selected:
-                    return has_selected and not has_deselected
-
-                return not has_deselected
-
-            filtered_df = filtered_df[
-                filtered_df.apply(_row_passes_keyword_filter, axis=1)
-            ]
-    else:
-        filtered_df = filtered_df.iloc[0:0]
-
 filtered_df["__airia_priority"] = (
     filtered_df.apply(_row_matches_airia_local, axis=1) if apply_airia_filters else False
 )
