@@ -1432,11 +1432,7 @@ def generate_ai_summary_excel(
                 if len(re.sub(r"\s+", "", extra_raw)) >= 200:
                     extra_count += 1
                     extra_name = os.path.basename(extra_path)
-                    extra_pages = split_pages(extra_raw)
-                    extra_pick = _select_relevant_pages(extra_pages, max_pages=12)
-                    extra_ctx = _pack_pages(extra_pages, extra_pick, f"EXTRA {extra_name}", max_len=5000)
-                    if extra_ctx:
-                        extra_text_blocks.append(extra_ctx)
+                    PLACEHOLDER
             except Exception:
                 pass
 
