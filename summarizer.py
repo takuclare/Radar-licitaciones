@@ -1050,6 +1050,7 @@ REGLAS:
    - Debe ser útil para preparar la oferta, pero resumido.
    - Máximo aproximado de 5 líneas.
    - Explica qué hay que hacer, alcance, entregables y finalidad, sin copiar párrafos larguísimos del pliego.
+5.2) VISITA TECNICA: Aqui solo vas a poner SI o NO, dependiendo de sie el pliego pide Visita OBLIGATORIA EN LA FASE DE LICITACION, OJO, EN LA FASE DE LICITACION. Si no la piden pones que NO, si no lo mencionan pones que NO solo si mencionan que para licitar es necesario una visita a las instalaciones entonces pondrás que SI
 
 6) FORMATO DE LISTAS EN TODO EL EXCEL:
    - SIEMPRE que listes elementos, cada elemento debe empezar por "- " y terminar con un salto de línea real dentro de la celda.
