@@ -1071,17 +1071,17 @@ def _tender_modal(tender_id: str, row_dict: dict):
 
         with st.form(key=f"form_{tender_id}", clear_on_submit=False):
             uploaded_pcap = st.file_uploader(
-                f"Sube PCAP (PDF) - obligatorio · máx. {MAX_UPLOAD_MB} MB",
+                f"Sube PCAP (PDF) - obligatorio",
                 type=["pdf"],
                 key=f"up_pcap_{tender_id}"
             )
             uploaded_ppt = st.file_uploader(
-                f"Sube PPT (PDF) - opcional · máx. {MAX_UPLOAD_MB} MB",
+                f"Sube PPT (PDF) - opcional",
                 type=["pdf"],
                 key=f"up_ppt_{tender_id}"
             )
             uploaded_extra = st.file_uploader(
-                f"Sube Anuncio u otros (PDF) - opcional · máx. {MAX_UPLOAD_MB} MB",
+                f"Sube Anuncio u otros (PDF) - opcional",
                 type=["pdf"],
                 key=f"up_extra_{tender_id}"
             )
