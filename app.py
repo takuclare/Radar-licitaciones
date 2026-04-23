@@ -893,14 +893,18 @@ filtered_df["__airia_priority"] = (
     filtered_df.apply(_row_matches_airia_local, axis=1) if apply_airia_filters else False
 )
 filtered_df["__airia_focus"] = filtered_df.apply(_row_matches_airia_focus, axis=1)
+filtered_df["__has_boosted_keywords"] = filtered_df.apply(
+    lambda r: bool(str(r.get("boost_keywords", "") or "").strip()) or bool(str(r.get("super_keywords", "") or "").strip()),
+    axis=1,
+)
 filtered_df["__bloqueada_sort"] = filtered_df.get("bloqueada", False).fillna(False).astype(bool)
 if apply_airia_filters:
     filtered_df = filtered_df.sort_values(
-        by=["__bloqueada_sort", "__airia_priority", "publicacion", "__airia_focus", "score"],
-        ascending=[True, False, False, False, False],
+        by=["__bloqueada_sort", "__airia_priority", "__has_boosted_keywords", "__airia_focus", "score", "publicacion"],
+        ascending=[True, False, False, False, False, False],
         na_position="last"
     )
-filtered_df = filtered_df.drop(columns=["__bloqueada_sort"], errors="ignore")
+filtered_df = filtered_df.drop(columns=["__bloqueada_sort", "__has_boosted_keywords"], errors="ignore")
 filtered_df = filtered_df.drop(columns=["__amount_num", "__domain", "__platform_label"], errors="ignore").reset_index(drop=True)
 st.session_state.filtered_count = len(filtered_df)
 
