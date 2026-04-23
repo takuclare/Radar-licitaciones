@@ -17,7 +17,7 @@ DATA_EXCEL = os.getenv("DATA_EXCEL", str(ROOT / "data" / "TRABAJOS AIRIA.xlsx"))
 OUTPUT_DIR = Path(os.getenv("SNAPSHOT_OUTPUT_DIR", str(ROOT / "snapshot_output")))
 LIMIT_PER_FEED = int(os.getenv("SNAPSHOT_LIMIT_PER_FEED", "3000") or 3000)
 MAX_FEED_PAGES = int(os.getenv("SNAPSHOT_MAX_FEED_PAGES", "15") or 15)
-ONLY_LAST_DAYS = int(os.getenv("SNAPSHOT_ONLY_LAST_DAYS", "2") or 2)
+ONLY_LAST_DAYS = int(os.getenv("SNAPSHOT_ONLY_LAST_DAYS", "5") or 5)
 EXCLUDE_DEADLINE_SOON_DAYS = int(os.getenv("SNAPSHOT_EXCLUDE_DEADLINE_SOON_DAYS", "2") or 2)
 
 
