@@ -840,6 +840,7 @@ with st.sidebar:
 
     st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
     if st.button("🧠 Resumen IA", key="open_manual_summary_modal", use_container_width=True):
+        st.session_state.active_tender = None
         st.session_state.manual_summary_modal_open = True
         st.session_state.manual_summary_status = ""
         st.session_state.manual_summary_xlsx = None
@@ -961,13 +962,18 @@ if "active_tender" not in st.session_state:
     st.session_state.active_tender = None  # tender_id activo en el modal
 
 def _open_tender_modal(tid: str) -> None:
+    # Modal de licitación y modal genérico deben ser independientes/mutuamente excluyentes.
+    # Si el genérico se cerró con la X del diálogo, Streamlit no siempre actualiza
+    # manual_summary_modal_open; por eso lo apagamos explícitamente al abrir una licitación.
+    st.session_state.manual_summary_modal_open = False
     st.session_state.active_tender = tid
 
 def _close_tender_modal() -> None:
     st.session_state.active_tender = None
-    st.session_state.manual_summary_modal_open = False
 
 def _open_manual_summary_modal() -> None:
+    # Al abrir el resumen genérico, cerramos cualquier detalle de licitación activo.
+    st.session_state.active_tender = None
     st.session_state.manual_summary_modal_open = True
 
 def _close_manual_summary_modal() -> None:
@@ -1220,8 +1226,6 @@ def _manual_summary_modal():
     st.caption("Sube pliegos o documentación de una licitación que ya tengáis para generar el Excel resumen sin necesidad de buscarla antes en el radar.")
 
     with st.form(key="manual_summary_form", clear_on_submit=False):
-        manual_title = st.text_input("Título de la licitación", placeholder="Escribe un título identificativo")
-        manual_link = st.text_input("Enlace del expediente - opcional", placeholder="https://...")
         uploaded_pcap = st.file_uploader(
             "Sube PCAP (PDF) - obligatorio",
             type=["pdf"],
@@ -1258,7 +1262,7 @@ def _manual_summary_modal():
             )
             status_box.warning(st.session_state.manual_summary_status)
         else:
-            manual_id_base = f"manual|{manual_title or ''}|{uploaded_pcap.name or ''}|{datetime.now().isoformat()}"
+            manual_id_base = f"manual|{uploaded_pcap.name or ''}|{datetime.now().isoformat()}"
             manual_tender_id = hashlib.md5(manual_id_base.encode("utf-8")).hexdigest()
 
             pcap_name = _safe_filename(uploaded_pcap.name, "PCAP.pdf")
@@ -1290,8 +1294,8 @@ def _manual_summary_modal():
                     except Exception:
                         pass
 
-                tender_title_manual = (manual_title or "Licitación manual").strip() or "Licitación manual"
-                tender_link_manual = (manual_link or "").strip()
+                tender_title_manual = ""
+                tender_link_manual = ""
 
                 with status_box.status("🤖 Generando Excel Resumen IA…", expanded=True) as s:
                     s.update(label="Paso 1/3: leyendo pliegos…", state="running")
@@ -1433,9 +1437,11 @@ else:
 
 # Abrir modal si hay uno seleccionado
 
-if st.session_state.get("manual_summary_modal_open"):
-    _manual_summary_modal()
-
 _active = st.session_state.get("active_tender")
 if _active and _active in _tender_map:
+    # Prioridad al modal de licitación: evita que un estado antiguo del modal genérico
+    # vuelva a abrirse cuando se pulsa "Abrir" en una licitación.
+    st.session_state.manual_summary_modal_open = False
     _tender_modal(_active, _tender_map[_active])
+elif st.session_state.get("manual_summary_modal_open"):
+    _manual_summary_modal()
