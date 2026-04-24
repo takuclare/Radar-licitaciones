@@ -70,7 +70,7 @@ jobs:
           SNAPSHOT_OUTPUT_DIR: snapshot_branch/data
           SNAPSHOT_LIMIT_PER_FEED: '3000'
           SNAPSHOT_MAX_FEED_PAGES: '15'
-          SNAPSHOT_ONLY_LAST_DAYS: '10'
+          SNAPSHOT_ONLY_LAST_DAYS: '15'
           SNAPSHOT_EXCLUDE_DEADLINE_SOON_DAYS: '2'
         run: |
           python workers/build_snapshot.py
