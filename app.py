@@ -1046,9 +1046,9 @@ def _tender_modal(tender_id: str, row_dict: dict):
     # ============ DESCARGAR PLIEGOS ============
     with col1:
         st.markdown("<div class='modal-section'><h4>Pliegos</h4>", unsafe_allow_html=True)
-        if st.button("📄 Descargar anuncio o pliego", key=f"dlpl_{tender_id}", use_container_width=True):
+        if st.button("📄 Descargar Anuncio", key=f"dlpl_{tender_id}", use_container_width=True):
             try:
-                with status_box.status("🔎 Buscando PCAP/PPT…", expanded=True) as s:
+                with status_box.status("🔎 Buscando anuncio…", expanded=True) as s:
                     s.update(label="Paso 1/2: entrando al expediente…", state="running")
                     pcap_path, ppt_path, info = download_pliegos_from_tender_page(
                         tender_link=link,
@@ -1080,16 +1080,6 @@ def _tender_modal(tender_id: str, row_dict: dict):
                     use_container_width=True,
                 )
 
-        if pl.get("ppt_path") and os.path.exists(pl["ppt_path"]):
-            with open(pl["ppt_path"], "rb") as f:
-                st.download_button(
-                    "⬇️ Descargar PPT",
-                    data=f,
-                    file_name=os.path.basename(pl["ppt_path"]),
-                    key=f"dl_ppt_{tender_id}",
-                    mime="application/pdf",
-                    use_container_width=True,
-                )
         st.markdown("</div>", unsafe_allow_html=True)
 
     # ============ MANUAL (PCAP obligatorio, PPT opcional) ============
