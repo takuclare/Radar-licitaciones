@@ -1046,7 +1046,7 @@ def _tender_modal(tender_id: str, row_dict: dict):
     # ============ DESCARGAR PLIEGOS ============
     with col1:
         st.markdown("<div class='modal-section'><h4>Pliegos</h4>", unsafe_allow_html=True)
-        if st.button("📄 Descargar Anuncio", key=f"dlpl_{tender_id}", use_container_width=True):
+        if st.button("📄 Descargar", key=f"dlpl_{tender_id}", use_container_width=True):
             try:
                 with status_box.status("🔎 Buscando anuncio…", expanded=True) as s:
                     s.update(label="Paso 1/2: entrando al expediente…", state="running")
@@ -1072,7 +1072,7 @@ def _tender_modal(tender_id: str, row_dict: dict):
         if pl.get("pcap_path") and os.path.exists(pl["pcap_path"]):
             with open(pl["pcap_path"], "rb") as f:
                 st.download_button(
-                    "⬇️ Descargar Anuncio",
+                    "⬇️ Descargar",
                     data=f,
                     file_name=os.path.basename(pl["pcap_path"]),
                     key=f"dl_pcap_{tender_id}",
