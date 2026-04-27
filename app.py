@@ -371,6 +371,21 @@ style_css = """
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
+  .ai-help-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    margin-top: 8px;
+    border-radius: 999px;
+    border: 1px solid #CBD5E1;
+    background: #FFFFFF;
+    color: #334155;
+    font-weight: 800;
+    cursor: help;
+    user-select: none;
+  }
   .close-btn div.stButton > button {
     background: #FFFFFF !important;
     color: #0F172A !important;
@@ -1046,7 +1061,7 @@ def _tender_modal(tender_id: str, row_dict: dict):
     # ============ DESCARGAR PLIEGOS ============
     with col1:
         st.markdown("<div class='modal-section'><h4>Pliegos</h4>", unsafe_allow_html=True)
-        if st.button("📄 Descargar", key=f"dlpl_{tender_id}", use_container_width=True):
+        if st.button("📄 Descargar Anuncio", key=f"dlpl_{tender_id}", use_container_width=True):
             try:
                 with status_box.status("🔎 Buscando anuncio…", expanded=True) as s:
                     s.update(label="Paso 1/2: entrando al expediente…", state="running")
@@ -1072,7 +1087,7 @@ def _tender_modal(tender_id: str, row_dict: dict):
         if pl.get("pcap_path") and os.path.exists(pl["pcap_path"]):
             with open(pl["pcap_path"], "rb") as f:
                 st.download_button(
-                    "⬇️ Descargar",
+                    "⬇️ Descargar Anuncio",
                     data=f,
                     file_name=os.path.basename(pl["pcap_path"]),
                     key=f"dl_pcap_{tender_id}",
@@ -1102,7 +1117,15 @@ def _tender_modal(tender_id: str, row_dict: dict):
                 type=["pdf"],
                 key=f"up_extra_{tender_id}"
             )
-            submitted = st.form_submit_button("🧠 Generar Excel Resumen IA")
+            submit_col, help_col = st.columns([0.86, 0.14], vertical_alignment="center")
+            with submit_col:
+                submitted = st.form_submit_button("🧠 Generar Excel Resumen IA", use_container_width=True)
+            with help_col:
+                st.markdown(
+                    "<span class='ai-help-icon' title='Cuanto más pesen los archivos más tiempo puede llegar a cargar. Subir archivos de más de 10mb puede causar errores.'>?</span>",
+                    unsafe_allow_html=True
+                )
+
         ai_progress_ph = st.empty()
 
         if submitted:
@@ -1231,7 +1254,15 @@ def _manual_summary_modal():
             type=["pdf"],
             key="manual_summary_extra"
         )
-        submitted = st.form_submit_button("🧠 Generar Excel Resumen IA")
+        submit_col, help_col = st.columns([0.86, 0.14], vertical_alignment="center")
+        with submit_col:
+            submitted = st.form_submit_button("🧠 Generar Excel Resumen IA", use_container_width=True)
+        with help_col:
+            st.markdown(
+                "<span class='ai-help-icon' title='Cuanto más pesen los archivos más tiempo puede llegar a cargar. Subir archivos de más de 10mb puede causar errores.'>?</span>",
+                unsafe_allow_html=True
+            )
+
 
     ai_progress_ph = st.empty()
 
