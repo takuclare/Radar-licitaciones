@@ -1,5 +1,5 @@
 {
-  "generated_at_utc": "2026-11-05T18:37:34.867142Z",
+  "generated_at_utc": "2026-11-05T23:52:12.369330Z",
   "data_excel": "TRABAJOS AIRIA.xlsx",
   "company_corpus_len": 609,
   "limit_per_feed": 3000,
@@ -8,6 +8,25 @@
   "exclude_deadline_soon_days": 2,
   "feed_entries": 6000,
   "mode": "only_cpv_airia",
-  "detected_count": 0,
-  "rows": []
+  "detected_count": 1,
+  "rows": [
+    {
+      "title": "Acuerdo marco de suministro de energía eléctrica para la administración y el sector público institucional de la Comunidad Autónoma de Cantabria.",
+      "summary": "Id licitación: 2.2.1005/26; Órgano de Contratación: Consejería de Presidencia, Justicia, Seguridad y Simplificación Administrativa de la Comunidad Autónoma de Cantabria; Importe: 71050207.81 EUR; Estado: PUB",
+      "link": "https://contrataciondelestado.es/wps/poc?uri=deeplink:detalle_licitacion&idEvl=1QZhXngnXpw7%2B9FIQYNjeQ%3D%3D",
+      "updated": "2026-11-05T08:46:36.340000",
+      "publicacion": "2026-11-05T09:14:42",
+      "fecha_limite": "",
+      "similitud": 0.12382138207194891,
+      "bloqueada": true,
+      "score": -27.617861792805108,
+      "boost_keywords": "",
+      "blocked_hits": "suministro, Suministro",
+      "super_keywords": "",
+      "priority_cpvs": "",
+      "source_feed": "https://contrataciondelsectorpublico.gob.es/sindicacion/sindicacion_643/licitacionesPerfilesContratanteCompleto3.atom",
+      "sim": 0.12382138207194891,
+      "contract_value_no_vat": "71050207.81 EUR"
+    }
+  ]
 }
